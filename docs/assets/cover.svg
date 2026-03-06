@@ -1,47 +1,67 @@
 <svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="120" y1="60" x2="1160" y2="580" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#E9F1D8"/>
-      <stop offset="1" stop-color="#D4E0D8"/>
+    <linearGradient id="bg" x1="76" y1="64" x2="1187" y2="587" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EFF5E7"/>
+      <stop offset="1" stop-color="#D9E4D4"/>
     </linearGradient>
-    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#13251A" stop-opacity="0.96"/>
-      <stop offset="1" stop-color="#264735" stop-opacity="0.96"/>
+    <linearGradient id="card" x1="92" y1="78" x2="1091" y2="564" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#13231A"/>
+      <stop offset="1" stop-color="#224535"/>
     </linearGradient>
-    <filter id="shadow" x="0" y="0" width="1280" height="640" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="24" stdDeviation="30" flood-color="#13251A" flood-opacity="0.14"/>
+    <linearGradient id="line" x1="839" y1="112" x2="1179" y2="514" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DDEBCA" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#79B28D" stop-opacity="0.2"/>
+    </linearGradient>
+    <filter id="shadow" x="41" y="42" width="1198" height="556" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#13231A" flood-opacity="0.18"/>
     </filter>
   </defs>
 
-  <rect width="1280" height="640" rx="32" fill="url(#bg)"/>
-  <circle cx="1090" cy="112" r="180" fill="#BFD0B6" fill-opacity="0.55"/>
-  <circle cx="156" cy="518" r="210" fill="#F1F5E7" fill-opacity="0.85"/>
+  <rect width="1280" height="640" rx="30" fill="url(#bg)"/>
+  <circle cx="1048" cy="96" r="178" fill="#C5D7BF" fill-opacity="0.46"/>
+  <circle cx="175" cy="524" r="196" fill="#F4F8EE" fill-opacity="0.86"/>
 
   <g filter="url(#shadow)">
-    <rect x="70" y="74" width="1140" height="492" rx="28" fill="url(#card)"/>
+    <rect x="82" y="74" width="1116" height="492" rx="30" fill="url(#card)"/>
   </g>
 
-  <rect x="118" y="132" width="170" height="170" rx="34" fill="#EDF4E4" fill-opacity="0.1"/>
-  <rect x="146" y="160" width="114" height="114" rx="26" stroke="#DDEBCB" stroke-width="10"/>
-  <rect x="189" y="194" width="28" height="46" rx="10" fill="#DDEBCB"/>
-  <rect x="263" y="194" width="18" height="46" rx="9" fill="#DDEBCB"/>
-  <path d="M206 128C232 111 267 111 294 128" stroke="#DDEBCB" stroke-width="10" stroke-linecap="round"/>
+  <g opacity="0.92">
+    <path d="M794 162C874 149 911 166 966 212C1023 260 1041 297 1115 320" stroke="url(#line)" stroke-width="2.4"/>
+    <path d="M784 214C850 204 903 219 950 260C998 302 1039 344 1125 366" stroke="url(#line)" stroke-width="2"/>
+    <path d="M770 272C832 268 880 281 929 323C980 368 1036 414 1121 428" stroke="url(#line)" stroke-width="2"/>
+    <path d="M812 118C862 143 900 180 936 229C972 278 1004 316 1063 351" stroke="#B7D7BE" stroke-opacity="0.28" stroke-width="1.6"/>
+    <path d="M906 122C947 162 975 208 995 253C1015 298 1046 336 1106 378" stroke="#B7D7BE" stroke-opacity="0.24" stroke-width="1.6"/>
+    <path d="M860 426C917 418 964 431 1018 461C1068 490 1094 508 1148 520" stroke="#B7D7BE" stroke-opacity="0.25" stroke-width="1.6"/>
+    <circle cx="810" cy="160" r="7" fill="#EAF5DF"/>
+    <circle cx="898" cy="177" r="6" fill="#EAF5DF"/>
+    <circle cx="969" cy="214" r="8" fill="#8CC29E"/>
+    <circle cx="1036" cy="283" r="7" fill="#EAF5DF"/>
+    <circle cx="1115" cy="320" r="8" fill="#8CC29E"/>
+    <circle cx="950" cy="260" r="7" fill="#EAF5DF"/>
+    <circle cx="1038" cy="344" r="7" fill="#EAF5DF"/>
+    <circle cx="1125" cy="366" r="8" fill="#8CC29E"/>
+    <circle cx="929" cy="323" r="6" fill="#EAF5DF"/>
+    <circle cx="1020" cy="392" r="7" fill="#8CC29E"/>
+    <circle cx="1121" cy="428" r="8" fill="#EAF5DF"/>
+  </g>
 
-  <text x="332" y="206" fill="#F7FBF2" font-size="76" font-weight="700" font-family="PingFang SC, Helvetica, Arial, sans-serif">电池接管</text>
-  <text x="336" y="256" fill="#B8D3BE" font-size="28" font-weight="500" font-family="Avenir Next, Helvetica, Arial, sans-serif">Battery Takeover</text>
+  <rect x="132" y="142" width="176" height="176" rx="36" fill="#EEF5E6" fill-opacity="0.08"/>
+  <rect x="160" y="170" width="120" height="120" rx="26" stroke="#EAF5DF" stroke-width="10"/>
+  <rect x="204" y="205" width="32" height="48" rx="12" fill="#EAF5DF"/>
+  <rect x="282" y="206" width="20" height="46" rx="10" fill="#EAF5DF"/>
+  <path d="M218 138C246 121 282 121 312 138" stroke="#EAF5DF" stroke-width="10" stroke-linecap="round"/>
 
-  <text x="120" y="386" fill="#E9F3E2" font-size="34" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">macOS 电池监控、阈值控充、日报复盘</text>
-  <text x="120" y="432" fill="#BFD0C0" font-size="26" font-weight="400" font-family="PingFang SC, Helvetica, Arial, sans-serif">CLI + LaunchAgent + Dashboard + Desktop App</text>
+  <text x="348" y="208" fill="#F8FCF4" font-size="78" font-weight="700" font-family="PingFang SC, Helvetica, Arial, sans-serif">电池接管</text>
+  <text x="352" y="258" fill="#B8D6C0" font-size="30" font-weight="500" font-family="Avenir Next, Helvetica, Arial, sans-serif">Battery Takeover</text>
+  <text x="132" y="390" fill="#E8F3E1" font-size="36" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">为长期插电办公准备的 macOS 电池管理小发明</text>
+  <text x="132" y="438" fill="#B8CCC0" font-size="27" font-weight="400" font-family="PingFang SC, Helvetica, Arial, sans-serif">分钟级采样 · 阈值控充 · 日报复盘 · 桌面入口</text>
 
-  <rect x="120" y="476" width="214" height="52" rx="26" fill="#3A7A50"/>
-  <text x="148" y="510" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">92 / 88 阈值控充</text>
+  <rect x="132" y="481" width="206" height="54" rx="27" fill="#3A7A50"/>
+  <text x="161" y="516" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">92 / 88 控充策略</text>
 
-  <rect x="358" y="476" width="192" height="52" rx="26" fill="#F1F5E7" fill-opacity="0.12"/>
-  <text x="388" y="510" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">分钟级采样</text>
+  <rect x="356" y="481" width="182" height="54" rx="27" fill="#F2F7EA" fill-opacity="0.11"/>
+  <text x="386" y="516" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">LaunchAgent</text>
 
-  <rect x="574" y="476" width="208" height="52" rx="26" fill="#F1F5E7" fill-opacity="0.12"/>
-  <text x="604" y="510" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">开机自动运行</text>
-
-  <rect x="806" y="476" width="212" height="52" rx="26" fill="#F1F5E7" fill-opacity="0.12"/>
-  <text x="836" y="510" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">轻量桌面入口</text>
+  <rect x="556" y="481" width="164" height="54" rx="27" fill="#F2F7EA" fill-opacity="0.11"/>
+  <text x="586" y="516" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">Dashboard</text>
 </svg>

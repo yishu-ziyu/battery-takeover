@@ -1,0 +1,50 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="90" y1="70" x2="1502" y2="820" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EFF4E8"/>
+      <stop offset="1" stop-color="#D5E0D4"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="104" y1="100" x2="1490" y2="794" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#13251A"/>
+      <stop offset="1" stop-color="#244838"/>
+    </linearGradient>
+    <linearGradient id="charge" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#68B386"/>
+      <stop offset="1" stop-color="#2F8055"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" rx="36" fill="url(#bg)"/>
+  <rect x="84" y="82" width="1432" height="736" rx="32" fill="url(#panel)"/>
+
+  <text x="126" y="168" fill="#F8FCF4" font-size="64" font-weight="700" font-family="PingFang SC, Helvetica, Arial, sans-serif">功能演示：控充循环</text>
+  <text x="128" y="220" fill="#B9D5BE" font-size="28" font-weight="400" font-family="PingFang SC, Helvetica, Arial, sans-serif">用清晰的阈值区间代替“永远充到 100%”</text>
+
+  <rect x="126" y="286" width="866" height="388" rx="28" fill="#F7FBF2" fill-opacity="0.04" stroke="#D7E9D5" stroke-opacity="0.16"/>
+  <line x1="172" y1="614" x2="934" y2="614" stroke="#A6C3AF" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="172" y1="344" x2="172" y2="614" stroke="#A6C3AF" stroke-opacity="0.35" stroke-width="2"/>
+  <line x1="172" y1="406" x2="934" y2="406" stroke="#F0C76C" stroke-opacity="0.9" stroke-width="3" stroke-dasharray="10 10"/>
+  <line x1="172" y1="500" x2="934" y2="500" stroke="#85C89C" stroke-opacity="0.92" stroke-width="3" stroke-dasharray="10 10"/>
+  <text x="944" y="414" fill="#F0C76C" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">92% 停充阈值</text>
+  <text x="944" y="508" fill="#9FD5AE" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">88% 恢复阈值</text>
+
+  <path d="M174 536C218 542 252 552 297 564C340 576 370 575 420 562C480 546 521 496 575 463C618 438 660 434 706 438C756 443 804 444 856 444C887 444 912 443 934 438" stroke="url(#charge)" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="298" cy="564" r="9" fill="#7CC091"/>
+  <circle cx="574" cy="463" r="10" fill="#EAC36B"/>
+  <circle cx="856" cy="444" r="9" fill="#EAC36B"/>
+
+  <rect x="1038" y="286" width="430" height="174" rx="24" fill="#F7FBF2" fill-opacity="0.06" stroke="#D7E9D5" stroke-opacity="0.16"/>
+  <text x="1074" y="348" fill="#F8FCF4" font-size="34" font-weight="700" font-family="PingFang SC, Helvetica, Arial, sans-serif">当前策略</text>
+  <text x="1074" y="400" fill="#B7D0BF" font-size="24" font-weight="500" font-family="PingFang SC, Helvetica, Arial, sans-serif">电量 ≥ 92% → 下发停充</text>
+  <text x="1074" y="438" fill="#B7D0BF" font-size="24" font-weight="500" font-family="PingFang SC, Helvetica, Arial, sans-serif">电量 ≤ 88% → 恢复充电</text>
+
+  <rect x="1038" y="500" width="430" height="174" rx="24" fill="#F7FBF2" fill-opacity="0.06" stroke="#D7E9D5" stroke-opacity="0.16"/>
+  <text x="1074" y="562" fill="#F8FCF4" font-size="34" font-weight="700" font-family="PingFang SC, Helvetica, Arial, sans-serif">失败兜底</text>
+  <text x="1074" y="614" fill="#B7D0BF" font-size="24" font-weight="500" font-family="PingFang SC, Helvetica, Arial, sans-serif">执行器失败连续累计</text>
+  <text x="1074" y="652" fill="#B7D0BF" font-size="24" font-weight="500" font-family="PingFang SC, Helvetica, Arial, sans-serif">自动切换 `DEGRADED_READONLY`</text>
+
+  <rect x="126" y="718" width="256" height="54" rx="27" fill="#3C7D52"/>
+  <text x="154" y="753" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">真实机器已验证</text>
+  <rect x="402" y="718" width="286" height="54" rx="27" fill="#F7FBF2" fill-opacity="0.12"/>
+  <text x="432" y="753" fill="#F8FCF4" font-size="24" font-weight="600" font-family="PingFang SC, Helvetica, Arial, sans-serif">不是 UI 原型，而是可跑闭环</text>
+</svg>

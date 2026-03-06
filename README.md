@@ -24,6 +24,17 @@
 - [产品文档](./docs/产品文档.md)
 - [开发日志](./docs/开发日志.md)
 - [调研基线](./调研-开源与产品基线.md)
+- [少数派发布文案](./docs/少数派发布文案.md)
+- [小红书发布文案](./docs/小红书发布文案.md)
+
+## GitHub 展示区
+
+### 实时面板截图
+![Dashboard Screenshot](./docs/assets/screens/dashboard-live.png)
+
+### 功能演示图
+![Control Loop](./docs/assets/social/demo-control-loop.png)
+![Product Surface](./docs/assets/social/demo-product-surface.png)
 
 ## 环境要求
 - macOS 15.x

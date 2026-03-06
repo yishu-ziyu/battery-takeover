@@ -11,3 +11,7 @@ config/logs/
 config/reports/
 
 .venv/
+
+docs/assets/png/
+docs/assets/screens/dashboard-window.png
+docs/assets/screens/dashboard-headless.png
