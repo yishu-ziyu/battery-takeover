@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PAYLOAD_DIR="/Library/Application Support/BatteryTakeoverInstaller/payload"
+
+console_user="$(stat -f%Su /dev/console)"
+if [[ -z "$console_user" || "$console_user" == "root" || "$console_user" == "loginwindow" ]]; then
+  echo "[postinstall] no active console user, payload left at: $PAYLOAD_DIR"
+  exit 0
+fi
+
+user_uid="$(id -u "$console_user")"
+user_gid="$(id -gn "$console_user")"
+user_home="$(dscl . -read "/Users/$console_user" NFSHomeDirectory | awk '{print $2}')"
+
+if [[ ! -d "$PAYLOAD_DIR" ]]; then
+  echo "[postinstall] payload missing: $PAYLOAD_DIR"
+  exit 1
+fi
+
+run_as_user_shell() {
+  local shell_cmd="$1"
+  /bin/launchctl asuser "$user_uid" \
+    /usr/bin/sudo -u "$console_user" \
+    /usr/bin/env HOME="$user_home" USER="$console_user" LOGNAME="$console_user" \
+    /bin/bash -lc "$shell_cmd"
+}
+
+chown -R "$console_user:$user_gid" "$PAYLOAD_DIR"
+
+run_as_user_shell "cd '$PAYLOAD_DIR' && ./install_desktop_app.sh"
+run_as_user_shell "open '$user_home/Applications/电池接管.app'" || true
+
+echo "[postinstall] installed for user: $console_user"
+echo "[postinstall] app: $user_home/Applications/电池接管.app"
+echo "[postinstall] desktop link: $user_home/Desktop/电池接管.app"

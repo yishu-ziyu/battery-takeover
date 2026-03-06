@@ -11,6 +11,8 @@ config/logs/
 config/reports/
 
 .venv/
+.build/
+dist/
 
 docs/assets/png/
 docs/assets/screens/dashboard-window.png

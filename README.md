@@ -4,7 +4,7 @@
 
 `电池接管` 是一个面向 macOS 的电池监控与阈值控充工具。它的目标不是宣称“物理旁路电池”，而是在系统与后端允许的范围内，把电池维持在更合理的区间，并把整个过程记录下来，方便回看和审计。
 
-当前版本已经打通完整 MVP：分钟级采集、`92/88` 阈值控充、日报复盘、开机自动运行、轻量 Dashboard，以及可点击的桌面入口。
+当前版本已经打通完整 MVP：分钟级采集、`92/88` 阈值控充、日报复盘、开机自动运行、轻量 Dashboard、可点击的桌面入口，以及可分发的 `macOS .pkg` 安装包。
 
 ## 能力概览
 - 分钟级采集电池、电源、健康状态
@@ -35,6 +35,24 @@
 ### 功能演示图
 ![Control Loop](./docs/assets/social/demo-control-loop.png)
 ![Product Surface](./docs/assets/social/demo-product-surface.png)
+
+## 一键安装
+如果你不是来研究源码，而是想直接使用这个项目，推荐直接去 GitHub Releases 下载安装包：
+
+- 下载 `battery-takeover-<version>-installer.pkg`
+- 双击安装
+- 安装结束后，系统会自动：
+  - 安装运行副本
+  - 配置 LaunchAgent
+  - 创建桌面入口 `电池接管.app`
+  - 打开产品界面
+
+Releases:
+- `https://github.com/yishu-ziyu/battery-takeover/releases`
+
+说明：
+- 当前安装包是未签名 `pkg`，首次安装时 macOS 可能会显示安全提示。
+- 对外公开分发的最终理想形态仍然是：开发者签名 + notarization。
 
 ## 环境要求
 - macOS 15.x
@@ -134,6 +152,16 @@ batt status
 ## 测试
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+## 打包安装包
+```bash
+./build_macos_installer.sh
+```
+
+产物默认输出到：
+```bash
+./dist/battery-takeover-<version>-installer.pkg
 ```
 
 ## License
