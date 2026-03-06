@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "battery-takeover"
+version = "0.1.0"
+description = "macOS battery monitoring, policy enforcement, and daily replay reports"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "MVP" }]
+dependencies = []
+
+[project.scripts]
+btake = "battery_takeover.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

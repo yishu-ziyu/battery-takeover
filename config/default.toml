@@ -1,0 +1,27 @@
+[policy]
+stop_percent = 92
+resume_percent = 88
+observe_hours = 24
+min_action_interval_sec = 300
+
+[sampling]
+interval_sec = 60
+timezone = "Asia/Shanghai"
+
+[control]
+enabled = true
+allow_write_after_observe = true
+
+[executor]
+preferred = ["battery", "batt"]
+auto_fallback = true
+command_timeout_sec = 8
+
+[notify]
+terminal = true
+macos_notification = true
+
+[paths]
+db = "/Users/mahaoxuan/Desktop/产品经理/电池接管/state/battery.db"
+log = "/Users/mahaoxuan/Desktop/产品经理/电池接管/logs/agent.log"
+reports_dir = "/Users/mahaoxuan/Desktop/产品经理/电池接管/reports"
