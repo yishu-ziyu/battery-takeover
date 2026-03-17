@@ -190,6 +190,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 ## 文档
 
+- [Changelog](./CHANGELOG.md)
 - [产品文档](./docs/产品文档.md)
 - [开发日志](./docs/开发日志.md)
 - [调研基线](./调研-开源与产品基线.md)
