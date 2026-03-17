@@ -9,8 +9,11 @@ import os
 import subprocess
 
 from .agent import run_cycle, setup_logging
-from .config import AppConfig, ensure_runtime_dirs, load_config, update_policy_thresholds
+from .config import AppConfig, ensure_runtime_dirs, load_config, update_dashboard_settings
+from .executors import BattExecutor, BatteryExecutor, ExecutorRouter
+from .models import ActionType
 from .notifier import Notifier
+from .policy import PolicyEngine, utc_now
 from .storage import Storage
 
 
@@ -149,6 +152,7 @@ def _read_policy_config(cfg: AppConfig) -> dict[str, int]:
         "resume_percent": fresh.policy.resume_percent,
         "observe_hours": fresh.policy.observe_hours,
         "min_action_interval_sec": fresh.policy.min_action_interval_sec,
+        "enabled": fresh.control.enabled,
     }
 
 
@@ -167,6 +171,98 @@ def _enforce_once(cfg: AppConfig) -> dict[str, object]:
         "action": result.action,
         "success": result.success,
         "message": result.message,
+    }
+
+
+def _build_router(cfg: AppConfig) -> ExecutorRouter:
+    executors = {
+        "battery": BatteryExecutor(timeout_sec=cfg.executor.command_timeout_sec),
+        "batt": BattExecutor(timeout_sec=cfg.executor.command_timeout_sec),
+    }
+    return ExecutorRouter(
+        executors=executors,
+        preferred=cfg.executor.preferred,
+        auto_fallback=cfg.executor.auto_fallback,
+    )
+
+
+def _clear_limit_now(cfg: AppConfig) -> dict[str, object]:
+    fresh = load_config(cfg.config_path)
+    ensure_runtime_dirs(fresh)
+    setup_logging(str(fresh.paths.log))
+    storage = Storage(fresh.paths.db)
+    storage.init_db()
+
+    router = _build_router(fresh)
+    backend_name, executor, status = router.choose()
+    if executor is None or status is None or not status.available:
+        raise RuntimeError("no available executor to clear charging limit")
+
+    result = executor.clear_limit()
+    now = utc_now()
+    ts = now.isoformat()
+
+    storage.insert_action(
+        ts=ts,
+        action_type=ActionType.CLEAR_LIMIT.value,
+        backend=result.backend,
+        target_percent=None,
+        success=result.success,
+        error_code=None if result.success else result.error_code or "EXEC_FAILED",
+        error_msg=result.error_msg,
+    )
+
+    engine = PolicyEngine(cfg=fresh, storage=storage)
+    snapshot = engine.load_runtime(now=now)
+    if result.success:
+        snapshot.charging_paused = False
+        snapshot.consecutive_failures = 0
+        snapshot.last_error = None
+        snapshot.last_action_at = ts
+        snapshot.last_backend = result.backend
+    else:
+        snapshot.last_error = result.error_msg or "failed to clear limit"
+        snapshot.last_action_at = ts
+        snapshot.last_backend = result.backend
+    engine.persist_runtime(snapshot, now=now)
+
+    return {
+        "ts": ts,
+        "mode": snapshot.mode.value,
+        "backend": result.backend,
+        "action": ActionType.CLEAR_LIMIT.value,
+        "success": result.success,
+        "message": "project control disabled; restored system charging" if result.success else (result.error_msg or "clear limit failed"),
+    }
+
+
+def _save_settings_and_apply(
+    cfg: AppConfig,
+    *,
+    stop_percent: int,
+    resume_percent: int,
+    enabled: bool,
+) -> dict[str, object]:
+    updated = update_dashboard_settings(
+        cfg.config_path,
+        stop_percent=stop_percent,
+        resume_percent=resume_percent,
+        enabled=enabled,
+    )
+
+    if not enabled:
+        result = _clear_limit_now(updated)
+    else:
+        result = _enforce_once(updated)
+
+    return {
+        "ok": True,
+        "policy": {
+            "stop_percent": updated.policy.stop_percent,
+            "resume_percent": updated.policy.resume_percent,
+            "enabled": updated.control.enabled,
+        },
+        "apply": result,
     }
 
 
@@ -241,6 +337,43 @@ def _html() -> str:
     .mono { font-family: \"IBM Plex Mono\", \"Menlo\", monospace; font-size: 12px; }
     .ctrl { display: flex; flex-direction: column; gap: 10px; }
     .ctrl-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(19, 37, 26, 0.05);
+      border: 1px solid rgba(19, 37, 26, 0.08);
+    }
+    .toggle-copy { display: flex; flex-direction: column; gap: 3px; }
+    .toggle-copy strong { font-size: 14px; }
+    .toggle-copy span { font-size: 12px; color: var(--muted); }
+    .switch {
+      appearance: none;
+      width: 54px;
+      height: 31px;
+      border-radius: 999px;
+      background: #8fa194;
+      position: relative;
+      cursor: pointer;
+      transition: background .16s ease;
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      width: 23px;
+      height: 23px;
+      top: 4px;
+      left: 4px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,.18);
+      transition: transform .16s ease;
+    }
+    .switch:checked { background: #1f7049; }
+    .switch:checked::after { transform: translateX(23px); }
     .ctrl input {
       width: 92px;
       padding: 6px 8px;
@@ -307,6 +440,13 @@ def _html() -> str:
       <div class=\"card side\">
         <div class=\"k\">阈值控制</div>
         <div class=\"ctrl\">
+          <div class=\"toggle\">
+            <div class=\"toggle-copy\">
+              <strong id=\"mgmt-title\">项目电池管理</strong>
+              <span id=\"mgmt-hint\">开启后按下方阈值控充；关闭后恢复系统默认充电规则。</span>
+            </div>
+            <input id=\"enabled-input\" class=\"switch\" type=\"checkbox\" />
+          </div>
           <div class=\"ctrl-row\">
             <label for=\"stop-input\">停充阈值(%)</label>
             <input id=\"stop-input\" type=\"number\" min=\"50\" max=\"100\" />
@@ -315,9 +455,9 @@ def _html() -> str:
             <label for=\"resume-input\">恢复阈值(%)</label>
             <input id=\"resume-input\" type=\"number\" min=\"40\" max=\"99\" />
           </div>
-          <button class=\"btn\" id=\"save-btn\">保存阈值</button>
+          <button class=\"btn\" id=\"save-btn\">保存设置并立即应用</button>
           <button class=\"btn secondary\" id=\"enforce-btn\">立即执行策略</button>
-          <div class=\"hint\">保存后 agent 下一周期生效；点击“立即执行策略”可马上下发。</div>
+          <div class=\"hint\">居家时保持开关开启并设置 92/88；出门前关闭开关，系统会恢复正常充到 100%。</div>
           <div id=\"save-msg\"></div>
         </div>
       </div>
@@ -413,22 +553,34 @@ async function loadPolicy() {
     const cfg = await res.json();
     $('stop-input').value = cfg.stop_percent;
     $('resume-input').value = cfg.resume_percent;
+    $('enabled-input').checked = Boolean(cfg.enabled);
+    syncControlForm(Boolean(cfg.enabled));
   } catch (err) {
     $('save-msg').textContent = `配置加载失败: ${err}`;
     $('save-msg').className = 'bad';
   }
 }
 
+function syncControlForm(enabled) {
+  $('mgmt-title').textContent = enabled ? '项目电池管理：开启' : '项目电池管理：关闭';
+  $('mgmt-hint').textContent = enabled
+    ? '开启后按下方阈值控充。当前更适合长期插电。'
+    : '关闭后会清除项目限充，让系统按默认规则继续充电。';
+  $('stop-input').disabled = !enabled;
+  $('resume-input').disabled = !enabled;
+}
+
 async function savePolicy() {
   const stop = Number($('stop-input').value);
   const resume = Number($('resume-input').value);
+  const enabled = $('enabled-input').checked;
   const msg = $('save-msg');
   msg.textContent = '保存中...';
   try {
     const res = await fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stop_percent: stop, resume_percent: resume }),
+      body: JSON.stringify({ stop_percent: stop, resume_percent: resume, enabled }),
     });
     const payload = await res.json();
     if (!res.ok) {
@@ -436,8 +588,12 @@ async function savePolicy() {
       msg.className = 'bad';
       return;
     }
-    msg.textContent = `已保存: stop=${payload.policy.stop_percent}, resume=${payload.policy.resume_percent}`;
-    msg.className = 'ok';
+    syncControlForm(Boolean(payload.policy.enabled));
+    const apply = payload.apply || {};
+    const appliedText = apply.action ? `；已执行 ${apply.action}` : '';
+    msg.textContent = `已保存: ${payload.policy.enabled ? '启用项目管理' : '恢复系统管理'}，stop=${payload.policy.stop_percent}，resume=${payload.policy.resume_percent}${appliedText}`;
+    msg.className = payload.apply && payload.apply.success === false ? 'bad' : 'ok';
+    await refresh();
   } catch (err) {
     msg.textContent = `保存失败: ${err}`;
     msg.className = 'bad';
@@ -501,6 +657,7 @@ async function refresh() {
     $('st-health').textContent = s.max_capacity_pct != null ? `${s.max_capacity_pct}%` : '-';
     $('st-action').textContent = a.action_type || '-';
     $('st-backend').textContent = a.backend || '-';
+    syncControlForm(Boolean((await (await fetch('/api/config')).json()).enabled));
 
     $('paths').textContent = `DB: ${ov.paths.db} | LOG: ${ov.paths.log} | REPORTS: ${ov.paths.reports_dir}`;
 
@@ -513,6 +670,9 @@ async function refresh() {
 
 $('save-btn').addEventListener('click', savePolicy);
 $('enforce-btn').addEventListener('click', enforceNow);
+$('enabled-input').addEventListener('change', (event) => {
+  syncControlForm(Boolean(event.target.checked));
+});
 
 loadPolicy();
 refresh();
@@ -574,21 +734,15 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 stop = int(data.get("stop_percent"))
                 resume = int(data.get("resume_percent"))
-                cfg = update_policy_thresholds(
-                    self.server.cfg.config_path,
+                enabled = bool(data.get("enabled", True))
+                payload = _save_settings_and_apply(
+                    self.server.cfg,
                     stop_percent=stop,
                     resume_percent=resume,
+                    enabled=enabled,
                 )
-                self.server.cfg = cfg
-                self._send_json(
-                    {
-                        "ok": True,
-                        "policy": {
-                            "stop_percent": cfg.policy.stop_percent,
-                            "resume_percent": cfg.policy.resume_percent,
-                        },
-                    }
-                )
+                self.server.cfg = load_config(self.server.cfg.config_path)
+                self._send_json(payload)
                 return
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)

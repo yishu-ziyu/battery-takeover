@@ -196,6 +196,36 @@ def update_policy_thresholds(
     return load_config(cfg_path)
 
 
+def update_control_enabled(
+    cfg_path: str | Path,
+    *,
+    enabled: bool,
+) -> AppConfig:
+    cfg = load_config(cfg_path)
+    cfg.control.enabled = bool(enabled)
+    save_config(cfg)
+    return load_config(cfg_path)
+
+
+def update_dashboard_settings(
+    cfg_path: str | Path,
+    *,
+    stop_percent: int,
+    resume_percent: int,
+    enabled: bool,
+) -> AppConfig:
+    cfg = load_config(cfg_path)
+    if stop_percent < 50 or stop_percent > 100:
+        raise ValueError("stop_percent must be between 50 and 100")
+    if resume_percent < 40 or resume_percent >= stop_percent:
+        raise ValueError("resume_percent must be >= 40 and lower than stop_percent")
+    cfg.policy.stop_percent = int(stop_percent)
+    cfg.policy.resume_percent = int(resume_percent)
+    cfg.control.enabled = bool(enabled)
+    save_config(cfg)
+    return load_config(cfg_path)
+
+
 def _relative_to_config_dir(config_path: Path, target_path: Path) -> str:
     base = config_path.parent.resolve()
     try:

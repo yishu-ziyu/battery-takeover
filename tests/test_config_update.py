@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from battery_takeover.config import load_config, update_policy_thresholds
+from battery_takeover.config import load_config, update_control_enabled, update_dashboard_settings, update_policy_thresholds
 
 
 class ConfigUpdateTests(unittest.TestCase):
@@ -52,6 +52,91 @@ reports_dir = "../reports"
             cfg2 = load_config(cfg_path)
             self.assertEqual(cfg2.policy.stop_percent, 94)
             self.assertEqual(cfg2.policy.resume_percent, 90)
+
+    def test_update_control_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "default.toml"
+            cfg_path.write_text(
+                """
+[policy]
+stop_percent = 92
+resume_percent = 88
+observe_hours = 24
+min_action_interval_sec = 300
+
+[sampling]
+interval_sec = 60
+timezone = "Asia/Shanghai"
+
+[control]
+enabled = true
+allow_write_after_observe = true
+
+[executor]
+preferred = ["battery", "batt"]
+auto_fallback = true
+command_timeout_sec = 8
+
+[notify]
+terminal = true
+macos_notification = true
+
+[paths]
+db = "../state/battery.db"
+log = "../logs/agent.log"
+reports_dir = "../reports"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            cfg = update_control_enabled(cfg_path, enabled=False)
+            self.assertFalse(cfg.control.enabled)
+
+            cfg2 = load_config(cfg_path)
+            self.assertFalse(cfg2.control.enabled)
+
+    def test_update_dashboard_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "default.toml"
+            cfg_path.write_text(
+                """
+[policy]
+stop_percent = 92
+resume_percent = 88
+observe_hours = 24
+min_action_interval_sec = 300
+
+[sampling]
+interval_sec = 60
+timezone = "Asia/Shanghai"
+
+[control]
+enabled = true
+allow_write_after_observe = true
+
+[executor]
+preferred = ["battery", "batt"]
+auto_fallback = true
+command_timeout_sec = 8
+
+[notify]
+terminal = true
+macos_notification = true
+
+[paths]
+db = "../state/battery.db"
+log = "../logs/agent.log"
+reports_dir = "../reports"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            cfg = update_dashboard_settings(cfg_path, stop_percent=100, resume_percent=95, enabled=False)
+            self.assertEqual(cfg.policy.stop_percent, 100)
+            self.assertEqual(cfg.policy.resume_percent, 95)
+            self.assertFalse(cfg.control.enabled)
 
 
 if __name__ == "__main__":
