@@ -16,6 +16,8 @@ from .notifier import Notifier
 from .policy import PolicyEngine, utc_now
 from .storage import Storage
 
+MAX_BODY_SIZE = 1 * 1024 * 1024  # 1MB limit for request bodies
+
 
 def _row_to_dict(row):
     if row is None:
@@ -793,6 +795,9 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         if raw_len <= 0:
             return {}
+        if raw_len > MAX_BODY_SIZE:
+            self._send_json({"error": "request body too large"}, status=HTTPStatus.PAYLOAD_TOO_LARGE)
+            return None
         raw = self.rfile.read(raw_len)
         try:
             data = json.loads(raw.decode("utf-8"))

@@ -171,8 +171,12 @@ def run_agent(cfg: AppConfig, once: bool = False, dry_run: bool = False) -> int:
         try:
             cfg = load_config(cfg.config_path)
             ensure_runtime_dirs(cfg)
-        except Exception as exc:
-            logging.warning("config reload failed, use previous config: %s", exc)
+        except FileNotFoundError as exc:
+            logging.warning("config reload failed (file not found), use previous config: %s", exc)
+        except PermissionError as exc:
+            logging.warning("config reload failed (permission denied), use previous config: %s", exc)
+        except OSError as exc:
+            logging.warning("config reload failed (I/O error), use previous config: %s", exc)
         result = run_cycle(cfg=cfg, storage=storage, notifier=notifier, dry_run=dry_run)
         level = logging.INFO if result.success else logging.WARNING
         logging.log(

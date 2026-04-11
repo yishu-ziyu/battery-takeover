@@ -1,11 +1,40 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import logging
 import sqlite3
+import time
 from dataclasses import asdict
 from pathlib import Path
 
 from .models import BatterySample
+
+
+logger = logging.getLogger(__name__)
+
+SQLITE_BUSY_RETRY_TIMES = 3
+SQLITE_BUSY_RETRY_DELAY = 0.25
+
+
+def _retry_on_busy(func):
+    """Decorator to retry SQLite operations on SQLITE_BUSY errors."""
+    def wrapper(*args, **kwargs):
+        last_exc = None
+        for attempt in range(SQLITE_BUSY_RETRY_TIMES):
+            try:
+                return func(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                last_exc = exc
+                if "database is locked" in str(exc).lower() or attempt < SQLITE_BUSY_RETRY_TIMES - 1:
+                    logger.warning("sqlite locked, retrying (%s/%s): %s", attempt + 1, SQLITE_BUSY_RETRY_TIMES, exc)
+                    time.sleep(SQLITE_BUSY_RETRY_DELAY)
+                else:
+                    logger.error("sqlite operational error after %s retries: %s", SQLITE_BUSY_RETRY_TIMES, exc)
+            except sqlite3.IntegrityError as exc:
+                logger.error("sqlite integrity error: %s", exc)
+                raise
+        raise last_exc
+    return wrapper
 
 
 SCHEMA_SQL = """
@@ -49,11 +78,23 @@ class Storage:
 
     @contextmanager
     def _session(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
             conn.commit()
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            logger.error("database operational error: %s", exc)
+            raise
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            logger.error("database integrity error: %s", exc)
+            raise
+        except sqlite3.Error as exc:
+            conn.rollback()
+            logger.error("database error: %s", exc)
+            raise
         finally:
             conn.close()
 
@@ -61,29 +102,35 @@ class Storage:
         with self._session() as conn:
             conn.executescript(SCHEMA_SQL)
 
+    @_retry_on_busy
     def insert_sample(self, sample: BatterySample) -> int:
         fields = asdict(sample)
         with self._session() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO samples (
-                    ts,on_ac,percent,charging,time_remaining_min,
-                    cycle_count,max_capacity_pct,source_raw
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    fields["ts"],
-                    1 if fields["on_ac"] else 0,
-                    fields["percent"],
-                    1 if fields["charging"] else 0,
-                    fields["time_remaining_min"],
-                    fields["cycle_count"],
-                    fields["max_capacity_pct"],
-                    fields["source_raw"],
-                ),
-            )
-            return int(cur.lastrowid)
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO samples (
+                        ts,on_ac,percent,charging,time_remaining_min,
+                        cycle_count,max_capacity_pct,source_raw
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        fields["ts"],
+                        1 if fields["on_ac"] else 0,
+                        fields["percent"],
+                        1 if fields["charging"] else 0,
+                        fields["time_remaining_min"],
+                        fields["cycle_count"],
+                        fields["max_capacity_pct"],
+                        fields["source_raw"],
+                    ),
+                )
+                return int(cur.lastrowid)
+            except sqlite3.IntegrityError as exc:
+                logger.error("failed to insert sample (integrity error): %s", exc)
+                raise
 
+    @_retry_on_busy
     def insert_action(
         self,
         *,
@@ -96,24 +143,28 @@ class Storage:
         error_msg: str | None,
     ) -> int:
         with self._session() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO actions (
-                    ts, action_type, backend, target_percent,
-                    success, error_code, error_msg
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    ts,
-                    action_type,
-                    backend,
-                    target_percent,
-                    1 if success else 0,
-                    error_code,
-                    error_msg,
-                ),
-            )
-            return int(cur.lastrowid)
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO actions (
+                        ts, action_type, backend, target_percent,
+                        success, error_code, error_msg
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ts,
+                        action_type,
+                        backend,
+                        target_percent,
+                        1 if success else 0,
+                        error_code,
+                        error_msg,
+                    ),
+                )
+                return int(cur.lastrowid)
+            except sqlite3.IntegrityError as exc:
+                logger.error("failed to insert action (integrity error): %s", exc)
+                raise
 
     def set_state(self, key: str, value: str, ts: str) -> None:
         with self._session() as conn:
