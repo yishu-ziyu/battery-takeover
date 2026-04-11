@@ -14,8 +14,8 @@ cat > "$TMP_SCPT" <<SCPT
 on run
   set appDir to "$RUNTIME_APP_DIR"
   set cmd to "\"" & appDir & "/control.sh\" start >/tmp/battery_takeover_click.log 2>&1; " & ¬
-    "for i in {1..20}; do /usr/bin/curl -fsS http://127.0.0.1:8765/api/overview >/dev/null 2>&1 && break; /bin/sleep 0.4; done; " & ¬
-    "/usr/bin/open http://127.0.0.1:8765"
+    "for i in {1..20}; do /usr/bin/curl -fsS http://127.0.0.1:8775/api/overview >/dev/null 2>&1 && break; /bin/sleep 0.4; done; " & ¬
+    "/usr/bin/open http://127.0.0.1:8775"
   do shell script "/bin/zsh -lc " & quoted form of cmd
   activate
 end run

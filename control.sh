@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="$ROOT_DIR/config/default.toml"
 AGENT_PID_FILE="$ROOT_DIR/state/agent.pid"
 DASH_PID_FILE="$ROOT_DIR/state/dashboard.pid"
-DASH_PORT="${DASH_PORT:-8765}"
+DASH_PORT="${DASH_PORT:-8775}"
 AGENT_LABEL="com.battery.takeover.agent"
 LAUNCHD_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 
@@ -36,6 +36,23 @@ find_dashboard_pid() {
     return
   fi
   lsof -nP -iTCP:"$DASH_PORT" -sTCP:LISTEN -t 2>/dev/null | head -n 1 || true
+}
+
+is_our_dashboard_pid() {
+  local pid="$1"
+  if ! is_running "$pid"; then
+    return 1
+  fi
+
+  local cmd
+  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  case "$cmd" in
+    *"battery_takeover.cli"*dashboard*|*"btake"*dashboard*)
+      return 0
+      ;;
+  esac
+
+  return 1
 }
 
 is_agent_launchd_loaded() {
@@ -89,13 +106,13 @@ start_agent_managed() {
 start_dashboard() {
   local pid
   pid="$(read_pid "$DASH_PID_FILE")"
-  if is_running "$pid"; then
+  if is_our_dashboard_pid "$pid"; then
     echo "[dashboard] already running pid=$pid"
     return
   fi
 
   pid="$(find_dashboard_pid)"
-  if is_running "$pid"; then
+  if is_our_dashboard_pid "$pid"; then
     echo "$pid" > "$DASH_PID_FILE"
     echo "[dashboard] already running pid=$pid (process scan) url=http://127.0.0.1:$DASH_PORT"
     return
@@ -166,10 +183,10 @@ status() {
   echo "[dashboard]"
   local dpid
   dpid="$(read_pid "$DASH_PID_FILE")"
-  if ! is_running "$dpid"; then
+  if ! is_our_dashboard_pid "$dpid"; then
     dpid="$(find_dashboard_pid)"
   fi
-  if is_running "$dpid"; then
+  if is_our_dashboard_pid "$dpid"; then
     echo "running pid=$dpid url=http://127.0.0.1:$DASH_PORT"
   else
     echo "not running"

@@ -227,7 +227,7 @@ def _parser() -> argparse.ArgumentParser:
 
     sp_dashboard = sub.add_parser("dashboard", help="start local visual dashboard")
     sp_dashboard.add_argument("--host", default="127.0.0.1", help="bind host")
-    sp_dashboard.add_argument("--port", type=int, default=8765, help="bind port")
+    sp_dashboard.add_argument("--port", type=int, default=8775, help="bind port")
     sp_dashboard.add_argument("--open", action="store_true", help="open browser automatically")
 
     return p
