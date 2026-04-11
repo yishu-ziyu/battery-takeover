@@ -46,7 +46,7 @@ def _agent_status(cfg: AppConfig) -> dict[str, object]:
             return {"running": True, "pid": fallback_pid, "source": "process_scan"}
         return {"running": False, "pid": pid, "source": "pid_dead"}
     except PermissionError:
-        return {"running": True, "pid": pid, "source": "pid_permission_denied"}
+        return {"running": True, "pid": pid, "accessible": False, "source": "pid_permission_denied"}
 
 
 def _find_agent_pid_by_ps() -> int | None:
@@ -735,6 +735,13 @@ class _Handler(BaseHTTPRequestHandler):
                 stop = int(data.get("stop_percent"))
                 resume = int(data.get("resume_percent"))
                 enabled = bool(data.get("enabled", True))
+                # Input validation for bounds
+                if not (0 <= stop <= 100):
+                    self._send_json({"error": "stop_percent must be between 0 and 100"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                if not (0 <= resume <= 100):
+                    self._send_json({"error": "resume_percent must be between 0 and 100"}, status=HTTPStatus.BAD_REQUEST)
+                    return
                 payload = _save_settings_and_apply(
                     self.server.cfg,
                     stop_percent=stop,

@@ -79,16 +79,18 @@ start_agent() {
   fi
 
   cd "$ROOT_DIR"
-  nohup ./btake --config "$CONFIG" agent > ./logs/agent.nohup.log 2>&1 &
+  nohup "$ROOT_DIR/btake" --config "$CONFIG" agent > ./logs/agent.nohup.log 2>&1 &
   echo $! > "$AGENT_PID_FILE"
-  sleep 1
-  pid="$(read_pid "$AGENT_PID_FILE")"
-  if is_running "$pid"; then
-    echo "[agent] started pid=$pid"
-  else
-    echo "[agent] failed to start"
-    exit 1
-  fi
+  for i in {1..5}; do
+    pid="$(read_pid "$AGENT_PID_FILE")"
+    if is_running "$pid"; then
+      echo "[agent] started pid=$pid"
+      return
+    fi
+    sleep 0.5
+  done
+  echo "[agent] failed to start"
+  exit 1
 }
 
 start_agent_managed() {
@@ -121,14 +123,16 @@ start_dashboard() {
   cd "$ROOT_DIR"
   nohup ./btake --config "$CONFIG" dashboard --host 127.0.0.1 --port "$DASH_PORT" > ./logs/dashboard.log 2>&1 &
   echo $! > "$DASH_PID_FILE"
-  sleep 1
-  pid="$(read_pid "$DASH_PID_FILE")"
-  if is_running "$pid"; then
-    echo "[dashboard] started pid=$pid url=http://127.0.0.1:$DASH_PORT"
-  else
-    echo "[dashboard] failed to start"
-    exit 1
-  fi
+  for i in {1..5}; do
+    pid="$(read_pid "$DASH_PID_FILE")"
+    if is_running "$pid"; then
+      echo "[dashboard] started pid=$pid url=http://127.0.0.1:$DASH_PORT"
+      return
+    fi
+    sleep 0.5
+  done
+  echo "[dashboard] failed to start"
+  exit 1
 }
 
 stop_one() {

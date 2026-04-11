@@ -22,6 +22,6 @@ terminal = true
 macos_notification = true
 
 [paths]
-db = "/Users/mahaoxuan/Desktop/产品经理/电池接管/state/battery.db"
-log = "/Users/mahaoxuan/Desktop/产品经理/电池接管/logs/agent.log"
-reports_dir = "/Users/mahaoxuan/Desktop/产品经理/电池接管/reports"
+db = "state/battery.db"
+log = "logs/agent.log"
+reports_dir = "reports"
