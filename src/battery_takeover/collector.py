@@ -81,9 +81,17 @@ def _parse_system_profiler(raw: str) -> tuple[int | None, int | None]:
     return cycle_count, max_capacity
 
 
+def _redact_power_source_raw(raw: str) -> str:
+    raw = re.sub(r"Serial Number:\s*\S+", "Serial Number: <redacted>", raw)
+    return re.sub(r"\(id=\d+\)", "(id=<redacted>)", raw)
+
+
 def collect_raw(timeout_sec: int) -> CollectRaw:
     pmset_raw = _run(PMSET_CMD, timeout_sec)
-    sppower_raw = _run(SPPOWER_CMD, timeout_sec)
+    try:
+        sppower_raw = _run(SPPOWER_CMD, timeout_sec)
+    except CollectorError as exc:
+        sppower_raw = f"system_profiler_error: {exc}"
     return CollectRaw(pmset=pmset_raw, system_profiler=sppower_raw)
 
 
@@ -100,6 +108,7 @@ def collect_sample(timeout_sec: int) -> BatterySample:
         + "system_profiler:\n"
         + raw.system_profiler
     )
+    source_raw = _redact_power_source_raw(source_raw)
 
     return BatterySample(
         ts=ts,

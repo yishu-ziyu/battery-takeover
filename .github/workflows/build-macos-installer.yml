@@ -20,6 +20,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Run unit tests
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -v
+
       - name: Build installer
         run: |
           chmod +x build_macos_installer.sh

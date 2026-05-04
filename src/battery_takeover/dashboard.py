@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import ipaddress
 import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 import os
 import subprocess
+import sys
 
 from .agent import run_cycle, setup_logging
 from .config import AppConfig, ensure_runtime_dirs, load_config, update_dashboard_settings
@@ -23,6 +25,24 @@ def _row_to_dict(row):
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def _sample_row_to_public_dict(row):
+    if row is None:
+        return None
+    payload = _row_to_dict(row)
+    payload.pop("source_raw", None)
+    return payload
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _agent_status(cfg: AppConfig) -> dict[str, object]:
@@ -81,7 +101,7 @@ def _build_overview(cfg: AppConfig) -> dict[str, object]:
     st.init_db()
 
     runtime_state = st.get_state_map()
-    latest_sample = _row_to_dict(st.latest_sample())
+    latest_sample = _sample_row_to_public_dict(st.latest_sample())
     latest_action = _row_to_dict(st.latest_action())
     sample_count = st.count_samples()
     action_count = st.count_actions()
@@ -813,9 +833,32 @@ class DashboardServer(ThreadingHTTPServer):
         self.cfg = cfg
         super().__init__((host, port), _Handler)
 
+    def server_bind(self):
+        try:
+            super().server_bind()
+        except OSError as e:
+            if e.errno == 48 or "Address already in use" in str(e):  # EADDRINUSE
+                raise OSError(
+                    f"Port {self.server_address[1]} is already in use by another process. "
+                    f"Please stop the other application before starting BatteryTakeover Dashboard."
+                )
+            raise
+
 
 def run_dashboard(cfg: AppConfig, host: str, port: int, open_browser: bool) -> int:
-    server = DashboardServer(host=host, port=port, cfg=cfg)
+    if not _is_loopback_host(host):
+        print(
+            f"[dashboard] ERROR: refusing to bind control dashboard to non-loopback host {host!r}",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        server = DashboardServer(host=host, port=port, cfg=cfg)
+    except OSError as e:
+        if "Port" in str(e) and "already in use" in str(e):
+            print(f"[dashboard] ERROR: {e}", file=sys.stderr)
+            return 1
+        raise
     url = f"http://{host}:{port}"
     print(f"[dashboard] serving on {url}")
     if open_browser:
