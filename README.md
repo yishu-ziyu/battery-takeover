@@ -1,8 +1,13 @@
-![电池接管封面](./docs/assets/cover.svg)
+![电池接管发布页预览](./docs/assets/release/release-hero.png)
 
 # 电池接管（Battery Takeover）
 
 `电池接管` 是一个面向 macOS 的本地电池监控与阈值控充工具。它基于系统可见状态采样与第三方后端执行能力，在允许范围内将电池维持在目标区间，并保留完整的样本、动作与运行状态记录。
+
+发布页视觉稿：
+- [docs/release-page.html](./docs/release-page.html)
+- [桌面预览图](./docs/assets/release/release-page-desktop.png)
+- [移动端预览图](./docs/assets/release/release-page-mobile.png)
 
 项目当前提供：
 - 分钟级采样
