@@ -2,6 +2,8 @@
 
 # Battery Takeover
 
+Language: English | [简体中文](./README.zh-CN.md)
+
 Battery Takeover is a local macOS utility for monitoring battery state and applying threshold-based charging policies. It is designed for people who keep a MacBook plugged in for long work sessions and want a simple, inspectable way to reduce time spent at 100% charge.
 
 The project provides a lightweight command-line tool, a local Dashboard, optional LaunchAgent startup, daily reports, and a macOS `.pkg` installer.
