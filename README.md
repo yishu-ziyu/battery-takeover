@@ -1,71 +1,51 @@
-![电池接管发布页预览](./docs/assets/release/release-hero.png)
+![Battery Takeover release preview](./docs/assets/release/release-hero.png)
 
-# 电池接管（Battery Takeover）
+# Battery Takeover
 
-`电池接管` 是一个面向 macOS 的本地电池监控与阈值控充工具。它基于系统可见状态采样与第三方后端执行能力，在允许范围内将电池维持在目标区间，并保留完整的样本、动作与运行状态记录。
+Battery Takeover is a local macOS utility for monitoring battery state and applying threshold-based charging policies. It is designed for people who keep a MacBook plugged in for long work sessions and want a simple, inspectable way to reduce time spent at 100% charge.
 
-发布页视觉稿：
-- [docs/release-page.html](./docs/release-page.html)
-- [桌面预览图](./docs/assets/release/release-page-desktop.png)
-- [移动端预览图](./docs/assets/release/release-page-mobile.png)
+The project provides a lightweight command-line tool, a local Dashboard, optional LaunchAgent startup, daily reports, and a macOS `.pkg` installer.
 
-项目当前提供：
-- 分钟级采样
-- 阈值控充
-- 降级只读保护
-- 日报复盘
-- 本地 Dashboard
-- LaunchAgent 开机自启
-- `.pkg` 安装包
+## Features
 
-## 项目边界
+- **Battery sampling**: records current charge, AC state, charging state, cycle count, and capacity signals.
+- **Threshold policy**: stops and resumes charging based on configurable upper and lower limits, such as `92 / 88`.
+- **Local Dashboard**: shows current status, recent 24-hour history, runtime state, and recent actions.
+- **One-click mode switch**: turn project-managed charging on or off from the Dashboard.
+- **Read-only fallback**: keeps monitoring when the write backend is unavailable or an action fails.
+- **Daily replay reports**: generates a local summary from recorded samples and actions.
+- **LaunchAgent support**: can run the agent automatically after login.
+- **Installer build**: ships as a macOS `.pkg` for easier local installation.
 
-- 本项目不宣称提供“物理旁路电池”能力。
-- 当前实现的本质是“停止继续充电并维持区间”，而不是硬件级电源切换。
-- 写入能力依赖第三方后端；当前优先兼容 `batt`，`battery` 为备选。
-- 当后端不可用、执行失败或环境不满足要求时，系统会退回到只读监控。
-
-## 运行模式
-
-项目支持两种明确模式：
-
-- `项目电池管理：开启`
-  - 按配置阈值执行控充
-  - 典型场景是长期插电办公，例如 `92 / 88`
-- `项目电池管理：关闭`
-  - 主动清除项目设置的充电限制
-  - 将充电行为交还给系统与底层后端
-  - 典型场景是出门前希望充到 `100%`
-
-Dashboard 中的“保存设置并立即应用”会在保存后立刻下发对应动作，而不是仅修改配置文件。
-
-## 系统要求
+## Requirements
 
 - macOS 15.x
-- Apple Silicon
+- Apple Silicon Mac
 - Python 3.11+
-- 可用的 `batt` 或 `battery` 后端
+- A supported charging backend:
+  - `batt` is the preferred backend
+  - `battery` is kept as a fallback option
 
-## 安装
+## Installation
 
-### 方式一：直接安装
+### Option 1: Install from GitHub Releases
 
-从 GitHub Releases 下载 `battery-takeover-<version>-installer.pkg` 后双击安装。
+Download the latest `battery-takeover-<version>-installer.pkg` from:
 
-安装完成后会自动：
-- 安装运行副本
-- 配置 LaunchAgent
-- 创建桌面入口 `电池接管.app`
-- 打开本地界面
+[https://github.com/yishu-ziyu/battery-takeover/releases](https://github.com/yishu-ziyu/battery-takeover/releases)
 
-Releases:
-- [https://github.com/yishu-ziyu/battery-takeover/releases](https://github.com/yishu-ziyu/battery-takeover/releases)
+Then double-click the package to install it.
 
-说明：
-- 当前安装包未做开发者签名与 notarization。
-- 首次安装时，macOS 可能显示安全提示。
+The installer sets up:
 
-### 方式二：源码运行
+- a runtime copy of the app
+- a LaunchAgent
+- a desktop entry named `电池接管.app`
+- the local Dashboard entry point
+
+Current packages are not signed or notarized. On first install, macOS may show a security warning.
+
+### Option 2: Run from source
 
 ```bash
 python3 -m venv .venv
@@ -73,35 +53,40 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## 快速开始
+## Quick Start
 
-### 1. 环境体检
+Check whether the local environment is ready:
 
 ```bash
 ./btake --config ./config/default.toml doctor
 ```
 
-### 2. 初始化
+Initialize runtime directories:
 
 ```bash
 ./btake --config ./config/default.toml init
 ```
 
-### 3. 采样与策略验证
+Collect one sample and inspect the policy decision:
 
 ```bash
 ./btake --config ./config/default.toml sample
 ./btake --config ./config/default.toml enforce --dry-run
+```
+
+Apply the policy:
+
+```bash
 ./btake --config ./config/default.toml enforce
 ```
 
-### 4. 启动本地 Dashboard
+Start the local Dashboard:
 
 ```bash
 ./btake --config ./config/default.toml dashboard --open
 ```
 
-### 5. 使用统一入口脚本
+Use the helper script:
 
 ```bash
 ./control.sh start
@@ -111,94 +96,132 @@ pip install -e .
 
 ## Dashboard
 
-Dashboard 提供以下能力：
-- 查看最近 24 小时电量曲线
-- 查看当前采样、最近动作、执行后端与 Agent 状态
-- 调整停充阈值与恢复阈值
-- 切换“项目电池管理”开关
-- 立即执行一次策略
+The Dashboard runs locally at:
 
-默认地址：
-- [http://127.0.0.1:8775](http://127.0.0.1:8775)
+[http://127.0.0.1:8775](http://127.0.0.1:8775)
 
-实时界面示例：
+It shows:
 
-![Dashboard Screenshot](./docs/assets/screens/dashboard-live.png)
+- current charge and runtime mode
+- recent 24-hour battery curve
+- latest sample and latest action
+- active charging backend
+- LaunchAgent status
+- stop and resume thresholds
+- project-managed charging switch
+- manual policy execution
 
-## 开机自启与桌面入口
+![Dashboard screenshot](./docs/assets/screens/dashboard-live.png)
 
-安装 LaunchAgent：
+## Charging Modes
+
+Battery Takeover has two explicit operating modes:
+
+### Project-managed charging: on
+
+The policy engine applies the configured stop and resume thresholds. This is the usual mode for long plugged-in sessions, for example:
+
+```text
+stop at 92%
+resume at 88%
+```
+
+### Project-managed charging: off
+
+The project clears its charging limit and returns control to the system and the underlying backend. This is useful before leaving with the laptop, when charging to 100% is desired.
+
+In the Dashboard, **Save settings and apply now** persists the configuration and immediately applies the selected mode.
+
+## Daily Reports
+
+Generate a local daily report:
+
+```bash
+./btake --config ./config/default.toml report daily
+```
+
+Reports are written under the configured reports directory.
+
+## Startup and Desktop Entry
+
+Install the LaunchAgent:
 
 ```bash
 ./install_agent_launchd.sh
 ```
 
-安装桌面入口：
+Install the desktop app entry:
 
 ```bash
 ./install_desktop_app.sh
 ```
 
-安装后会生成：
+Generated app entries:
+
 - `~/Applications/电池接管.app`
 - `~/Desktop/电池接管.app`
 
-卸载：
+Uninstall:
 
 ```bash
 ./uninstall_desktop_app.sh
 ./uninstall_agent_launchd.sh
 ```
 
-## 常用命令
+## Troubleshooting
 
-```bash
-./btake --config ./config/default.toml doctor
-./btake --config ./config/default.toml status
-./btake --config ./config/default.toml report daily
-batt status
-```
-
-## 故障排查
-
-如果 `doctor` 显示后端不可用，优先检查：
+If `doctor` reports that the backend is unavailable, check the backend directly:
 
 ```bash
 batt status
 ```
 
-常见问题：
-- `batt daemon is not running`
-  - 说明 `batt` 守护进程未正常运行
-- socket 或权限错误
-  - 需要按 `batt` 官方方式修正 daemon 权限或服务安装
-- `doctor` 退化为只读
-  - 说明当前环境允许采样，但不满足安全写入条件
+Common cases:
 
-## 测试
+- `batt daemon is not running`: start or reinstall the `batt` daemon.
+- socket or permission errors: repair the backend daemon permissions according to the backend documentation.
+- read-only mode: sampling still works, but Battery Takeover will not attempt write actions until the environment is safe again.
+
+## Scope and Safety Notes
+
+Battery Takeover works within the capabilities exposed by macOS and the configured backend. It does not claim to provide hardware-level battery bypass or hardware-level power-source switching.
+
+The current implementation manages charging behavior by asking the backend to stop or resume charging at configured thresholds. When the backend is missing, unavailable, or returns errors, the project falls back to monitoring instead of forcing control.
+
+The Dashboard binds to loopback hosts only. It is intended as a local control surface, not a network-exposed service.
+
+## Development
+
+Run tests:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-## 打包
+Build the installer:
 
 ```bash
 ./build_macos_installer.sh
 ```
 
-默认产物：
+Default installer output:
 
 ```bash
 ./dist/battery-takeover-<version>-installer.pkg
 ```
 
-## 文档
+Release page assets:
+
+- [Release page HTML](./docs/release-page.html)
+- [Desktop preview](./docs/assets/release/release-page-desktop.png)
+- [Mobile preview](./docs/assets/release/release-page-mobile.png)
+
+## Documentation
 
 - [Changelog](./CHANGELOG.md)
-- [产品文档](./docs/产品文档.md)
-- [开发日志](./docs/开发日志.md)
-- [调研基线](./调研-开源与产品基线.md)
+- [Product notes](./docs/产品文档.md)
+- [Development log](./docs/开发日志.md)
+- [Research baseline](./调研-开源与产品基线.md)
 
 ## License
 
