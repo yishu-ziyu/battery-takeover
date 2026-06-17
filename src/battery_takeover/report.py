@@ -46,27 +46,60 @@ def generate_daily_report(cfg: AppConfig, storage: Storage, date_value: str | No
 
     action_total = len(actions)
     action_errors = sum(1 for row in actions if int(row["success"]) == 0)
+    target_count = sum(
+        1
+        for p in percents
+        if cfg.policy.resume_percent <= p <= cfg.policy.stop_percent
+    )
+    above_stop_count = sum(1 for p in percents if p > cfg.policy.stop_percent)
+    below_resume_count = sum(1 for p in percents if p < cfg.policy.resume_percent)
+    target_ratio = round((target_count / line_count) * 100, 2) if line_count else 0
+    success_ratio = round(((action_total - action_errors) / action_total) * 100, 2) if action_total else 0
+    error_rows = [row for row in actions if int(row["success"]) == 0]
+    detail_rows = actions[-80:]
 
     lines = [
         f"# 电池接管日报 - {report_day.isoformat()}",
+        "",
+        "## 今日结论",
+        f"- 目标区间: {cfg.policy.resume_percent}-{cfg.policy.stop_percent}%",
+        f"- 区间内样本占比: {target_ratio}%",
+        f"- 动作成功率: {success_ratio}%",
+        f"- 失败动作数: {action_errors}",
         "",
         "## 样本概览",
         f"- 样本数: {line_count}",
         f"- 电量最小/最大/均值: {p_min}/{p_max}/{p_avg}",
         f"- AC 供电样本占比: {round((ac_count / line_count) * 100, 2) if line_count else 0}%",
         f"- 充电中样本占比: {round((charging_count / line_count) * 100, 2) if line_count else 0}%",
+        f"- 高于停充线样本数: {above_stop_count}",
+        f"- 低于恢复线样本数: {below_resume_count}",
         "",
         "## 策略动作",
         f"- 动作总数: {action_total}",
         f"- 失败动作数: {action_errors}",
         "",
-        "## 动作明细",
+        "## 失败明细",
     ]
 
-    if not actions:
+    if not error_rows:
+        lines.append("- 无失败动作")
+    else:
+        for row in error_rows:
+            lines.append(
+                "- "
+                f"{row['ts']} | {row['action_type']} | backend={row['backend']} | "
+                f"err={row['error_msg'] or ''}"
+            )
+
+    lines.extend(["", "## 最近动作明细"])
+
+    if not detail_rows:
         lines.append("- 无动作记录")
     else:
-        for row in actions:
+        if len(actions) > len(detail_rows):
+            lines.append(f"- 仅显示最近 {len(detail_rows)} 条；完整动作记录在 SQLite 数据库中。")
+        for row in detail_rows:
             lines.append(
                 "- "
                 f"{row['ts']} | {row['action_type']} | backend={row['backend']} | "

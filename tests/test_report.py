@@ -61,6 +61,9 @@ class ReportTests(unittest.TestCase):
             self.assertTrue(p.exists())
             body = p.read_text(encoding="utf-8")
             self.assertIn("电池接管日报", body)
+            self.assertIn("今日结论", body)
+            self.assertIn("目标区间: 88-92%", body)
+            self.assertIn("区间内样本占比", body)
 
 
 if __name__ == "__main__":

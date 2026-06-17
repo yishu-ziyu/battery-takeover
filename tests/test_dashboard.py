@@ -18,6 +18,9 @@ from battery_takeover.config import (
 from battery_takeover.dashboard import (
     _build_history,
     _build_overview,
+    _build_product_snapshot,
+    _build_window_summary,
+    _explain_current_state,
     _is_loopback_host,
     _read_policy_config,
     _save_settings_and_apply,
@@ -30,8 +33,42 @@ class DashboardTests(unittest.TestCase):
     def test_build_overview_and_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
+            cfg_path = base / "config.toml"
+            cfg_path.write_text(
+                """
+[policy]
+stop_percent = 92
+resume_percent = 88
+observe_hours = 24
+min_action_interval_sec = 300
+
+[sampling]
+interval_sec = 60
+timezone = "Asia/Shanghai"
+
+[control]
+enabled = true
+allow_write_after_observe = true
+
+[executor]
+preferred = ["battery", "batt"]
+auto_fallback = true
+command_timeout_sec = 8
+
+[notify]
+terminal = true
+macos_notification = false
+
+[paths]
+db = "./state/battery.db"
+log = "./logs/agent.log"
+reports_dir = "./reports"
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
             cfg = AppConfig(
-                config_path=base / "config.toml",
+                config_path=cfg_path,
                 policy=PolicyConfig(92, 88, 24, 300),
                 sampling=SamplingConfig(60, "Asia/Shanghai"),
                 control=ControlConfig(True, True),
@@ -76,6 +113,16 @@ class DashboardTests(unittest.TestCase):
             self.assertGreaterEqual(len(history["samples"]), 1)
             self.assertGreaterEqual(len(history["actions"]), 1)
 
+            summary = _build_window_summary(cfg, 24)
+            self.assertEqual(summary["sample_count"], 1)
+            self.assertEqual(summary["action_count"], 1)
+            self.assertEqual(summary["failure_count"], 0)
+
+            snapshot = _build_product_snapshot(cfg)
+            self.assertEqual(snapshot["policy"]["stop_percent"], 92)
+            self.assertEqual(snapshot["window"]["sample_count"], 1)
+            self.assertIn("explanation", snapshot)
+
     def test_dashboard_only_allows_loopback_hosts_for_control_surface(self) -> None:
         self.assertTrue(_is_loopback_host("127.0.0.1"))
         self.assertTrue(_is_loopback_host("localhost"))
@@ -102,6 +149,52 @@ class DashboardTests(unittest.TestCase):
 
             self.assertEqual(rc, 2)
             mock_server.assert_not_called()
+
+    def test_explain_current_state_for_paused_control(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            cfg = AppConfig(
+                config_path=base / "config.toml",
+                policy=PolicyConfig(90, 88, 24, 300),
+                sampling=SamplingConfig(60, "Asia/Shanghai"),
+                control=ControlConfig(True, True),
+                executor=ExecutorConfig(["battery", "batt"], True, 8),
+                notify=NotifyConfig(True, False),
+                paths=PathsConfig(base / "state" / "battery.db", base / "logs" / "agent.log", base / "reports"),
+            )
+
+            explanation = _explain_current_state(
+                cfg,
+                {"percent": 91, "on_ac": 1, "charging": 0},
+                {"mode": "ACTIVE_CONTROL", "charging_paused": "1"},
+                {"action_type": "SET_LIMIT"},
+            )
+
+            self.assertEqual(explanation["level"], "ok")
+            self.assertIn("暂停充电", explanation["title"])
+
+    def test_explain_current_state_for_disabled_control(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            cfg = AppConfig(
+                config_path=base / "config.toml",
+                policy=PolicyConfig(90, 88, 24, 300),
+                sampling=SamplingConfig(60, "Asia/Shanghai"),
+                control=ControlConfig(False, True),
+                executor=ExecutorConfig(["battery", "batt"], True, 8),
+                notify=NotifyConfig(True, False),
+                paths=PathsConfig(base / "state" / "battery.db", base / "logs" / "agent.log", base / "reports"),
+            )
+
+            explanation = _explain_current_state(
+                cfg,
+                {"percent": 91, "on_ac": 1, "charging": 1},
+                {"mode": "ACTIVE_CONTROL", "charging_paused": "0"},
+                None,
+            )
+
+            self.assertEqual(explanation["level"], "warn")
+            self.assertIn("已关闭", explanation["title"])
 
     def test_read_policy_config_includes_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

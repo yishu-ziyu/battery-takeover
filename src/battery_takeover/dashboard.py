@@ -167,6 +167,127 @@ def _build_history(cfg: AppConfig, hours: int) -> dict[str, object]:
     }
 
 
+def _build_window_summary(cfg: AppConfig, hours: int = 24) -> dict[str, object]:
+    history = _build_history(cfg, hours)
+    samples = history["samples"]
+    actions = history["actions"]
+    percents = [int(row["percent"]) for row in samples]
+    action_total = len(actions)
+    action_failures = sum(1 for row in actions if int(row["success"]) == 0)
+    in_target = [
+        p
+        for p in percents
+        if cfg.policy.resume_percent <= p <= cfg.policy.stop_percent
+    ]
+    above_stop = [p for p in percents if p > cfg.policy.stop_percent]
+
+    return {
+        "hours": hours,
+        "sample_count": len(samples),
+        "action_count": action_total,
+        "failure_count": action_failures,
+        "success_rate": round(((action_total - action_failures) / action_total) * 100, 1) if action_total else None,
+        "min_percent": min(percents) if percents else None,
+        "max_percent": max(percents) if percents else None,
+        "avg_percent": round(sum(percents) / len(percents), 1) if percents else None,
+        "target_band_percent": round((len(in_target) / len(percents)) * 100, 1) if percents else None,
+        "above_stop_count": len(above_stop),
+    }
+
+
+def _explain_current_state(
+    cfg: AppConfig,
+    latest_sample: dict[str, object] | None,
+    runtime_state: dict[str, str],
+    latest_action: dict[str, object] | None,
+) -> dict[str, str]:
+    mode = runtime_state.get("mode", "OBSERVE_ONLY")
+    if not latest_sample:
+        return {
+            "level": "warn",
+            "title": "还没有采样数据",
+            "body": "请先运行采样或等待 Agent 写入第一条记录。",
+            "next": "运行 btake sample 或检查 LaunchAgent。",
+        }
+
+    percent = int(latest_sample["percent"])
+    on_ac = int(latest_sample["on_ac"]) == 1
+    charging = int(latest_sample["charging"]) == 1
+    charging_paused = runtime_state.get("charging_paused") in {"1", "true", "True"}
+    last_error = runtime_state.get("last_error") or ""
+    stop = cfg.policy.stop_percent
+    resume = cfg.policy.resume_percent
+
+    if mode == "DEGRADED_READONLY":
+        return {
+            "level": "bad",
+            "title": "已降级为只读",
+            "body": f"最近错误：{last_error or '执行器或采集状态异常'}。系统不会继续调整充电策略。",
+            "next": "先运行 doctor --repair，确认 batt daemon 和采集命令恢复。",
+        }
+
+    if not cfg.control.enabled:
+        return {
+            "level": "warn",
+            "title": "项目电池管理已关闭",
+            "body": "本工具当前不限制充电，Mac 会按系统设置或其他电池工具运行。",
+            "next": "需要长期插电保护时，开启项目电池管理并保存应用。",
+        }
+
+    if not on_ac:
+        return {
+            "level": "warn",
+            "title": "未接入电源",
+            "body": f"当前 {percent}%，策略保持观察；接入电源后才会按 {resume}-{stop}% 区间控充。",
+            "next": "接入电源后等待下一次 Agent 周期，或手动执行策略。",
+        }
+
+    if percent >= stop and charging_paused:
+        return {
+            "level": "ok",
+            "title": "已接管并暂停充电",
+            "body": f"当前 {percent}%，高于 {stop}% 上限，正在避免继续充电。",
+            "next": f"电量低于 {resume}% 后会恢复充电；出门前可关闭接管恢复系统充电。",
+        }
+
+    if percent <= resume and not charging_paused:
+        return {
+            "level": "ok",
+            "title": "低于恢复阈值，允许充电",
+            "body": f"当前 {percent}%，低于 {resume}% 恢复线，策略允许充到 {stop}%。",
+            "next": "保持接通电源即可，Agent 会继续巡检。",
+        }
+
+    if charging:
+        title = "正在区间内充电"
+        body = f"当前 {percent}%，目标区间是 {resume}-{stop}%。"
+    else:
+        title = "区间内保持"
+        body = f"当前 {percent}%，在目标区间附近；最近动作是 {(latest_action or {}).get('action_type') or '无'}。"
+    return {
+        "level": "ok",
+        "title": title,
+        "body": body,
+        "next": "如状态不符合预期，先查看最近动作和错误列。",
+    }
+
+
+def _build_product_snapshot(cfg: AppConfig) -> dict[str, object]:
+    overview = _build_overview(cfg)
+    latest_sample = overview["latest_sample"]
+    latest_action = overview["latest_action"]
+    runtime_state = overview["runtime_state"]
+    policy = _read_policy_config(cfg)
+    window = _build_window_summary(cfg, hours=24)
+    explanation = _explain_current_state(cfg, latest_sample, runtime_state, latest_action)
+    return {
+        "overview": overview,
+        "policy": policy,
+        "window": window,
+        "explanation": explanation,
+    }
+
+
 def _read_policy_config(cfg: AppConfig) -> dict[str, int]:
     fresh = load_config(cfg.config_path)
     return {
@@ -290,965 +411,721 @@ def _save_settings_and_apply(
 
 def _html() -> str:
     return """<!doctype html>
-<html lang=\"zh-CN\" data-theme=\"dark\">
+<html lang=\"zh-CN\">
 <head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>电池接管 Dashboard</title>
   <style>
     :root {
-      --bg-primary: #0a0f0d;
-      --bg-secondary: #111a15;
-      --bg-card: rgba(255,255,255,0.04);
-      --text-primary: #e8f0e9;
-      --text-secondary: #7a9e85;
-      --accent: #3ddc84;
-      --accent-dim: #2a9d5c;
-      --warn: #f0a030;
-      --bad: #e04545;
-      --border: rgba(255,255,255,0.08);
-      --radius: 16px;
-      --shadow: 0 8px 32px rgba(0,0,0,0.4);
-      --transition: all 0.3s ease;
-    }
-    [data-theme=\"light\"] {
-      --bg-primary: #f5f7f5;
-      --bg-secondary: #e8f0e8;
-      --bg-card: rgba(255,255,255,0.72);
-      --text-primary: #13251a;
-      --text-secondary: #4f6657;
-      --accent: #2a9d5c;
-      --accent-dim: #1f7049;
-      --warn: #b07400;
+      --bg: #f7f8f8;
+      --rail: #eef2f0;
+      --surface: #ffffff;
+      --surface-soft: #f2f5f3;
+      --ink: #17201d;
+      --muted: #62706a;
+      --quiet: #87938e;
+      --accent: #0f7a4f;
+      --accent-weak: #e5f3ec;
+      --warn: #b56b00;
+      --warn-weak: #fff4df;
       --bad: #b03636;
-      --border: rgba(0,0,0,0.08);
-      --shadow: 0 8px 32px rgba(0,0,0,0.08);
+      --bad-weak: #fdecec;
+      --line: #0f7a4f;
+      --border: rgba(23, 32, 29, 0.12);
+      --radius: 8px;
+      --shadow: 0 10px 24px rgba(20, 28, 34, 0.07);
+      --rail-w: 248px;
     }
     * { box-sizing: border-box; }
-    html { transition: var(--transition); }
     body {
       margin: 0;
-      font-family: \"IBM Plex Sans\", \"Source Han Sans SC\", \"Noto Sans CJK SC\", sans-serif;
-      color: var(--text-primary);
-      background: var(--bg-primary);
+      font-family: -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Source Han Sans SC\", \"Noto Sans CJK SC\", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
       min-height: 100vh;
-      transition: var(--transition);
-    }
-    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 20px 40px; }
-
-    /* Header */
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 24px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid var(--border);
-    }
-    .header-left { display: flex; flex-direction: column; gap: 4px; }
-    .title { margin: 0; font-size: clamp(24px, 3vw, 32px); font-weight: 700; letter-spacing: -0.5px; }
-    .subtitle { margin: 0; color: var(--text-secondary); font-size: 13px; display: flex; align-items: center; gap: 8px; }
-    .header-actions { display: flex; align-items: center; gap: 12px; }
-    .icon-btn {
-      width: 36px; height: 36px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: var(--bg-card);
-      color: var(--text-secondary);
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: var(--transition);
-    }
-    .icon-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .icon-btn.spinning svg { animation: spin 1s linear infinite; }
-    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    .refresh-countdown {
-      font-size: 12px;
-      color: var(--text-secondary);
-      min-width: 28px;
-      text-align: center;
-    }
-
-    /* Grid Layout */
-    .grid {
-      display: grid;
-      grid-template-columns: 280px 1fr 260px;
-      gap: 16px;
-      margin-bottom: 16px;
-    }
-    .grid-bottom {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-bottom: 16px;
-    }
-    .card {
-      background: var(--bg-card);
-      backdrop-filter: blur(12px);
-      border-radius: var(--radius);
-      padding: 20px;
-      box-shadow: var(--shadow);
-      border: 1px solid var(--border);
-      transition: var(--transition);
-    }
-    .card-title {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 16px;
-    }
-
-    /* Battery Ring */
-    .battery-ring-container {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 20px 0;
-    }
-    .battery-ring-svg { transform: rotate(-90deg); }
-    .battery-ring-track { fill: none; stroke: var(--border); stroke-width: 8; }
-    .battery-ring-fill {
-      fill: none;
-      stroke-width: 8;
-      stroke-linecap: round;
-      transition: stroke-dashoffset 0.8s ease, stroke 0.5s ease;
-    }
-    .battery-ring-text {
-      position: absolute;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-    .battery-percent {
-      font-size: 48px;
-      font-weight: 700;
-      line-height: 1;
-      transition: color 0.5s ease;
-    }
-    .battery-label {
-      font-size: 13px;
-      color: var(--text-secondary);
-      margin-top: 4px;
-    }
-    .battery-status {
-      margin-top: 16px;
       font-size: 14px;
-      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    button, input { font: inherit; }
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    }
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 16px;
+      background: var(--rail);
+      border-right: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+    .brand-mark {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: var(--accent);
+      box-shadow: inset 0 -12px 20px rgba(0,0,0,.08);
+    }
+    .brand-title { font-size: 22px; font-weight: 690; line-height: 1.1; letter-spacing: -0.01em; }
+    .brand-version { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .nav { display: grid; gap: 6px; }
+    .nav-item {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      color: #344039;
+      font-weight: 560;
+      letter-spacing: 0.01em;
     }
-    .status-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: pulse 2s ease-in-out infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.5; transform: scale(0.8); }
-    }
-
-    /* Chart */
-    .chart-container { position: relative; }
-    #curve {
-      width: 100%; height: 260px;
-      display: block;
-      border-radius: 12px;
-      overflow: visible;
-    }
-    .chart-tooltip {
-      position: absolute;
-      background: var(--bg-secondary);
+    .nav-item.active { background: rgba(15, 122, 79, .1); color: var(--accent); }
+    .nav svg, .brand svg { width: 20px; height: 20px; stroke-width: 1.8; }
+    .rail-foot { margin-top: auto; display: grid; gap: 10px; }
+    .local-box {
+      padding: 12px;
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.68);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 14px;
-      font-size: 12px;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.2s;
-      z-index: 100;
+    }
+    .local-title { display: flex; align-items: center; gap: 8px; color: var(--accent); font-weight: 650; }
+    .local-text { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .content { min-width: 0; padding: 18px 24px 30px; }
+    .status-strip {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr 1fr 1fr;
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--border);
       box-shadow: var(--shadow);
-      white-space: nowrap;
+      margin-bottom: 14px;
     }
-    .chart-tooltip.visible { opacity: 1; }
-    .chart-legend {
+    .status-cell {
+      min-width: 0;
+      background: rgba(255,255,255,.88);
+      padding: 13px 16px;
       display: flex;
-      gap: 16px;
-      margin-top: 12px;
-      font-size: 12px;
-      color: var(--text-secondary);
-    }
-    .legend-item { display: flex; align-items: center; gap: 6px; }
-    .legend-line {
-      width: 20px; height: 2px;
-      border-radius: 1px;
-    }
-    .legend-line.dashed {
-      background: repeating-linear-gradient(90deg, currentColor, currentColor 4px, transparent 4px, transparent 8px);
-    }
-
-    /* Side Panel */
-    .side-panel { display: flex; flex-direction: column; gap: 20px; }
-    .mode-badge {
-      display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 16px;
-      border-radius: 999px;
-      font-size: 13px;
-      font-weight: 600;
-      width: fit-content;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .mode-badge.ACTIVE_CONTROL {
-      background: rgba(61,220,132,0.12);
-      color: var(--accent);
-      border: 1px solid rgba(61,220,132,0.2);
+    .status-label {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      flex: none;
     }
-    .mode-badge.ACTIVE_CONTROL .pulse-dot {
+    .status-value { font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: none; }
+    .dot.warn { background: var(--warn); }
+    .dot.bad { background: var(--bad); }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .panel {
+      background: var(--surface);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+    .panel-pad { padding: 16px; }
+    .hero { grid-column: span 8; padding: 20px 22px; }
+    .control-panel { grid-column: span 4; padding: 16px; }
+    .chart { grid-column: span 8; padding: 16px; }
+    .side { grid-column: span 4; padding: 16px; }
+    .wide { grid-column: span 12; padding: 16px; }
+    .half { grid-column: span 6; padding: 16px; }
+    .k { color: var(--muted); font-size: 12px; margin-bottom: 4px; letter-spacing: 0.02em; }
+    .v { font-size: 28px; font-weight: 680; line-height: 1.05; letter-spacing: -0.02em; }
+    .hero-grid { display: grid; grid-template-columns: 132px minmax(180px, .8fr) 1px minmax(240px, 1fr); gap: 24px; align-items: center; }
+    .hero-checks {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 26px;
+    }
+    .hero-check {
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .hero-check span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+    .hero-check strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 16px;
+      font-weight: 670;
+      letter-spacing: -0.01em;
+    }
+    .battery-shell {
+      width: 104px;
+      height: 170px;
+      margin: 0 auto;
+      padding: 8px;
+      border: 6px solid #d4dbd7;
+      border-radius: 20px;
+      position: relative;
+      background: #f3f6f4;
+    }
+    .battery-shell::before {
+      content: "";
+      width: 58px;
+      height: 12px;
+      border-radius: 8px 8px 0 0;
+      background: #d4dbd7;
+      position: absolute;
+      left: 50%;
+      top: -18px;
+      transform: translateX(-50%);
+    }
+    .battery-fill {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      height: 50%;
+      border-radius: 12px;
       background: var(--accent);
-      animation: pulse 2s ease-in-out infinite;
+      transition: height .24s ease;
     }
-    .mode-badge.OBSERVE_ONLY {
-      background: rgba(240,160,48,0.12);
-      color: var(--warn);
-      border: 1px solid rgba(240,160,48,0.2);
+    .battery-gauge-text {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      z-index: 1;
+      text-shadow: 0 1px 4px rgba(0,0,0,.2);
     }
-    .mode-badge.OBSERVE_ONLY .pulse-dot { background: var(--warn); }
-    .mode-badge.DEGRADED_READONLY {
-      background: rgba(224,69,69,0.12);
-      color: var(--bad);
-      border: 1px solid rgba(224,69,69,0.2);
+    .hero-percent { font-size: 46px; font-weight: 700; line-height: 1; letter-spacing: -0.03em; }
+    .hero-state { color: var(--accent); font-size: 20px; font-weight: 690; margin: 14px 0 6px; letter-spacing: -0.01em; }
+    .hero-copy { color: var(--muted); margin: 0; max-width: 42ch; }
+    .divider { width: 1px; height: 100%; background: var(--border); }
+    .policy-title { color: #303b35; font-weight: 640; }
+    .policy-band { color: var(--accent); font-size: 32px; font-weight: 720; letter-spacing: -0.02em; margin: 4px 0 12px; }
+    .policy-list { display: grid; grid-template-columns: minmax(100px, 1fr) auto; gap: 6px 22px; font-size: 13px; }
+    .policy-list span:nth-child(odd) { color: var(--muted); }
+    .mode { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .mode.ACTIVE_CONTROL { background: var(--accent-weak); color: var(--accent); }
+    .mode.OBSERVE_ONLY { background: rgba(176,116,0,.14); color: var(--warn); }
+    .mode.DEGRADED_READONLY { background: var(--bad-weak); color: var(--bad); }
+    .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 650; }
+    .pill.ok { background: var(--accent-weak); color: var(--accent); }
+    .pill.warn { background: var(--warn-weak); color: var(--warn); }
+    .pill.bad { background: var(--bad-weak); color: var(--bad); }
+    #curve {
+      width: 100%; height: 220px; display: block;
+      background: var(--surface-soft);
+      border-radius: 8px; border: 1px solid rgba(15,98,64,0.12);
     }
-    .mode-badge.DEGRADED_READONLY .pulse-dot { background: var(--bad); }
-    .pulse-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
+    .meta { margin-top: 8px; font-size: 12px; color: var(--muted); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 8px 6px; text-align: left; border-bottom: 1px dashed rgba(19,37,26,0.18); }
+    th { color: var(--muted); font-weight: 600; }
+    .ok { color: var(--accent); font-weight: 600; }
+    .bad { color: var(--bad); font-weight: 600; }
+    .row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px; }
+    .mono { font-family: \"SF Mono\", \"Menlo\", monospace; font-size: 12px; overflow-wrap: anywhere; color: #344039; }
+    .explain { display: grid; gap: 8px; }
+    .explain-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+    .explain-body { color: var(--ink); line-height: 1.45; font-size: 14px; }
+    .explain-next { color: var(--muted); line-height: 1.4; font-size: 12px; padding-top: 4px; }
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .stat { border-top: 1px solid var(--border); padding: 10px 0 6px; }
+    .stat .label { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+    .stat .num { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .ctrl { display: flex; flex-direction: column; gap: 10px; }
+    .ctrl-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+    .stepper {
+      display: grid;
+      grid-template-columns: 38px 76px 38px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--surface);
     }
-    .stat-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 10px 0;
-      border-bottom: 1px solid var(--border);
-      font-size: 13px;
+    .stepper button {
+      border: 0;
+      background: var(--surface-soft);
+      color: #2e3933;
+      cursor: pointer;
+      font-size: 20px;
     }
-    .stat-row:last-child { border-bottom: none; }
-    .stat-label { color: var(--text-secondary); }
-    .stat-value { font-weight: 600; }
-    .stat-value.ok { color: var(--accent); }
-    .stat-value.bad { color: var(--bad); }
-    .stat-value.warn { color: var(--warn); }
-
-    /* Controls */
-    .toggle-switch {
+    .stepper input {
+      border: 0;
+      border-inline: 1px solid var(--border);
+      text-align: center;
+      border-radius: 0;
+      width: 76px;
+      background: #fff;
+    }
+    .toggle {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 14px 16px;
-      border-radius: 12px;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      margin-bottom: 16px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(19, 37, 26, 0.05);
+      border: 1px solid rgba(19, 37, 26, 0.08);
     }
-    .toggle-info { display: flex; flex-direction: column; gap: 3px; }
-    .toggle-info strong { font-size: 14px; }
-    .toggle-info span { font-size: 12px; color: var(--text-secondary); }
-    .switch-input {
+    .toggle-copy { display: flex; flex-direction: column; gap: 3px; }
+    .toggle-copy strong { font-size: 14px; }
+    .toggle-copy span { font-size: 12px; color: var(--muted); }
+    .switch {
       appearance: none;
-      width: 52px;
-      height: 28px;
+      width: 54px;
+      height: 31px;
       border-radius: 999px;
-      background: var(--border);
+      background: #8fa194;
       position: relative;
       cursor: pointer;
-      transition: background 0.2s ease;
-      flex-shrink: 0;
+      transition: background .16s ease;
     }
-    .switch-input::after {
-      content: \"\";
+    .switch::after {
+      content: "";
       position: absolute;
-      width: 22px;
-      height: 22px;
-      top: 3px;
-      left: 3px;
+      width: 23px;
+      height: 23px;
+      top: 4px;
+      left: 4px;
       border-radius: 50%;
       background: #fff;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-      transition: transform 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,.18);
+      transition: transform .16s ease;
     }
-    .switch-input:checked { background: var(--accent); }
-    .switch-input:checked::after { transform: translateX(24px); }
-
-    .slider-group { margin-bottom: 16px; }
-    .slider-label {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      font-size: 13px;
+    .switch:checked { background: #1f7049; }
+    .switch:checked::after { transform: translateX(23px); }
+    .ctrl input {
+      padding: 6px 8px;
+      border-radius: 8px;
+      border: 1px solid rgba(19, 37, 26, .25);
+      font-size: 14px;
+      background: rgba(255,255,255,0.95);
+      color: var(--ink);
     }
-    .slider-value {
-      font-weight: 700;
-      color: var(--accent);
-      font-size: 16px;
-      min-width: 32px;
-      text-align: right;
-    }
-    .range-input {
-      width: 100%;
-      height: 6px;
-      border-radius: 3px;
-      -webkit-appearance: none;
-      appearance: none;
-      background: var(--bg-secondary);
-      outline: none;
-      cursor: pointer;
-    }
-    .range-input::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--accent);
-      cursor: pointer;
-      box-shadow: 0 2px 8px rgba(61,220,132,0.3);
-      transition: transform 0.15s ease;
-    }
-    .range-input::-webkit-slider-thumb:hover { transform: scale(1.2); }
-    .range-input::-moz-range-thumb {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--accent);
-      cursor: pointer;
-      border: none;
-      box-shadow: 0 2px 8px rgba(61,220,132,0.3);
-    }
-
-    .btn-group { display: flex; gap: 10px; margin-top: 16px; }
     .btn {
-      flex: 1;
       border: none;
-      border-radius: 10px;
-      padding: 10px 16px;
+      border-radius: 8px;
+      padding: 9px 12px;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
       background: var(--accent);
-      color: #0a0f0d;
-      transition: all 0.2s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
+      color: #fff;
+      transition: transform .14s ease, opacity .14s ease;
     }
-    .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
-    .btn:active { transform: translateY(0); }
+    .btn:hover { opacity: .92; }
+    .btn:active { transform: translateY(1px); }
     .btn.secondary {
-      background: var(--bg-secondary);
-      color: var(--text-primary);
+      background: #28483a;
+    }
+    .btn.ghost {
+      background: transparent;
+      color: #304139;
       border: 1px solid var(--border);
     }
-    .btn.secondary:hover { background: var(--border); }
-    .btn.loading { opacity: 0.7; pointer-events: none; }
-    .hint { font-size: 12px; color: var(--text-secondary); margin-top: 12px; line-height: 1.5; }
-    .msg { font-size: 13px; min-height: 20px; margin-top: 12px; font-weight: 500; }
-    .msg.ok { color: var(--accent); }
-    .msg.bad { color: var(--bad); }
-
-    /* Timeline */
-    .timeline { position: relative; padding-left: 24px; }
-    .timeline::before {
-      content: \"\";
-      position: absolute;
-      left: 7px;
-      top: 0;
-      bottom: 0;
-      width: 2px;
-      background: var(--border);
-    }
-    .timeline-item {
-      position: relative;
-      padding: 12px 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .timeline-item:last-child { border-bottom: none; }
-    .timeline-dot {
-      position: absolute;
-      left: -20px;
-      top: 16px;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--bg-secondary);
-      border: 2px solid var(--border);
-    }
-    .timeline-dot.success { background: var(--accent); border-color: var(--accent); }
-    .timeline-dot.error { background: var(--bad); border-color: var(--bad); }
-    .timeline-time {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-bottom: 4px;
-    }
-    .timeline-content {
+    .hint { font-size: 12px; color: var(--muted); }
+    .notice {
       display: flex;
-      align-items: center;
       gap: 8px;
-      font-size: 13px;
-    }
-    .timeline-badge {
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-      background: var(--bg-secondary);
-    }
-    .timeline-badge.success { color: var(--accent); }
-    .timeline-badge.error { color: var(--bad); }
-    .timeline-empty {
-      color: var(--text-secondary);
-      font-size: 13px;
-      padding: 20px 0;
-    }
-
-    /* Footer */
-    .footer {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 16px 20px;
+      align-items: flex-start;
+      padding: 10px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(181,107,0,.24);
+      background: var(--warn-weak);
+      color: #7b4a00;
       font-size: 12px;
-      color: var(--text-secondary);
-      border-top: 1px solid var(--border);
-      margin-top: 8px;
+      line-height: 1.45;
     }
-    .footer-paths { font-family: \"IBM Plex Mono\", \"Menlo\", monospace; }
-
-    /* Toast */
-    .toast-container {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .toast {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px 20px;
-      box-shadow: var(--shadow);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 13px;
-      animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s forwards;
-      max-width: 360px;
-    }
-    .toast.success { border-left: 3px solid var(--accent); }
-    .toast.error { border-left: 3px solid var(--bad); }
-    @keyframes toastIn {
-      from { transform: translateX(100%); opacity: 0; }
-      to { transform: translateX(0); opacity: 1; }
-    }
-    @keyframes toastOut {
-      from { transform: translateX(0); opacity: 1; }
-      to { transform: translateX(100%); opacity: 0; }
-    }
-
-    /* Skeleton */
+    #save-msg { font-size: 12px; min-height: 18px; }
+    .empty-row { color: var(--muted); text-align: center; padding: 16px 6px; }
     .skeleton {
-      background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--border) 50%, var(--bg-secondary) 75%);
-      background-size: 200% 100%;
-      animation: shimmer 1.5s infinite;
+      position: relative;
+      overflow: hidden;
+      background: var(--surface-soft);
       border-radius: 6px;
+      min-height: 14px;
     }
-    @keyframes shimmer {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
+    .skeleton::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translateX(-100%);
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.72), transparent);
+      animation: shimmer 1.4s infinite;
     }
-    .skeleton-text { height: 14px; margin: 8px 0; }
-    .skeleton-title { height: 12px; width: 60%; margin-bottom: 16px; }
-    .skeleton-ring { width: 160px; height: 160px; border-radius: 50%; margin: 20px auto; }
-    .skeleton-chart { height: 200px; margin: 10px 0; }
+    @keyframes shimmer { 100% { transform: translateX(100%); } }
 
-    /* Responsive */
-    @media (max-width: 1024px) {
-      .grid { grid-template-columns: 240px 1fr 220px; }
-    }
     @media (max-width: 900px) {
-      .grid { grid-template-columns: 1fr 1fr; }
-      .grid-bottom { grid-template-columns: 1fr; }
-      .chart-area { grid-column: span 2; }
-      .side-panel { grid-column: span 2; flex-direction: row; flex-wrap: wrap; }
-      .side-panel .card { flex: 1; min-width: 200px; }
+      .app { grid-template-columns: 1fr; }
+      .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+      .nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .rail-foot { display: none; }
+      .content { padding: 14px 12px 24px; }
+      .status-strip { grid-template-columns: 1fr; }
+      .hero, .control-panel, .chart, .side, .wide, .half { grid-column: span 12; }
+      .hero-grid { grid-template-columns: 1fr; gap: 16px; }
+      .hero-checks { grid-template-columns: 1fr; margin-top: 18px; }
+      .divider { display: none; }
+      .stat-grid { grid-template-columns: repeat(2, 1fr); }
     }
-    @media (max-width: 600px) {
-      .wrap { padding: 16px 12px 24px; }
-      .grid { grid-template-columns: 1fr; }
-      .grid-bottom { grid-template-columns: 1fr; }
-      .chart-area { grid-column: span 1; }
-      .side-panel { grid-column: span 1; flex-direction: column; }
-      .header { flex-direction: column; align-items: flex-start; gap: 12px; }
-      .btn-group { flex-direction: column; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
     }
   </style>
 </head>
 <body>
-  <div class=\"wrap\">
-    <!-- Header -->
-    <div class=\"header\">
-      <div class=\"header-left\">
-        <h1 class=\"title\">电池接管</h1>
-        <p class=\"subtitle\">
-          <span id=\"stamp\">加载中...</span>
-          <span style=\"color: var(--border);\">|</span>
-          <span>自动刷新 <span id=\"countdown\">10</span>s</span>
-        </p>
-      </div>
-      <div class=\"header-actions\">
-        <button class=\"icon-btn\" id=\"theme-btn\" title=\"切换主题\">
-          <svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
-            <circle cx=\"12\" cy=\"12\" r=\"5\"/>
-            <line x1=\"12\" y1=\"1\" x2=\"12\" y2=\"3\"/><line x1=\"12\" y1=\"21\" x2=\"12\" y2=\"23\"/>
-            <line x1=\"4.22\" y1=\"4.22\" x2=\"5.64\" y2=\"5.64\"/><line x1=\"18.36\" y1=\"18.36\" x2=\"19.78\" y2=\"19.78\"/>
-            <line x1=\"1\" y1=\"12\" x2=\"3\" y2=\"12\"/><line x1=\"21\" y1=\"12\" x2=\"23\" y2=\"12\"/>
-            <line x1=\"4.22\" y1=\"19.78\" x2=\"5.64\" y2=\"18.36\"/><line x1=\"18.36\" y1=\"5.64\" x2=\"19.78\" y2=\"4.22\"/>
-          </svg>
-        </button>
-        <button class=\"icon-btn\" id=\"refresh-btn\" title=\"立即刷新\">
-          <svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
-            <polyline points=\"23 4 23 10 17 10\"/><polyline points=\"1 20 1 14 7 14\"/>
-            <path d=\"M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15\"/>
-          </svg>
-        </button>
-        <span class=\"refresh-countdown\" id=\"countdown-display\">10</span>
-      </div>
-    </div>
-
-    <!-- Main Grid -->
-    <div class=\"grid\">
-      <!-- Battery Ring -->
-      <div class=\"card\">
-        <div class=\"card-title\">当前电量</div>
-        <div class=\"battery-ring-container\" id=\"battery-skeleton\">
-          <div style=\"position: relative; width: 180px; height: 180px;\">
-            <svg class=\"battery-ring-svg\" width=\"180\" height=\"180\" viewBox=\"0 0 180 180\">
-              <circle class=\"battery-ring-track\" cx=\"90\" cy=\"90\" r=\"78\" />
-              <circle class=\"battery-ring-fill\" id=\"battery-ring\" cx=\"90\" cy=\"90\" r=\"78\"
-                stroke-dasharray=\"490\" stroke-dashoffset=\"490\" />
-            </svg>
-            <div class=\"battery-ring-text\" style=\"position: absolute; top: 0; left: 0; right: 0; bottom: 0;\">
-              <div class=\"battery-percent\" id=\"kpi-percent\">--</div>
-              <div class=\"battery-label\">剩余电量</div>
-            </div>
-          </div>
-          <div class=\"battery-status\">
-            <span class=\"status-dot\" id=\"charging-dot\"></span>
-            <span id=\"charging-status\">--</span>
-          </div>
+  <svg width=\"0\" height=\"0\" style=\"position:absolute\" aria-hidden=\"true\">
+    <symbol id=\"i-battery\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
+      <rect x=\"3\" y=\"7\" width=\"16\" height=\"10\" rx=\"2\"></rect><path d=\"M21 11v2\"></path><path d=\"M7 11h6\"></path>
+    </symbol>
+    <symbol id=\"i-gauge\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
+      <path d=\"M4 13a8 8 0 0 1 16 0\"></path><path d=\"M12 13l4-4\"></path><path d=\"M7 18h10\"></path>
+    </symbol>
+    <symbol id=\"i-chart\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
+      <path d=\"M4 19V5\"></path><path d=\"M4 19h16\"></path><path d=\"m7 15 3-4 4 2 4-7\"></path>
+    </symbol>
+    <symbol id=\"i-terminal\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
+      <path d=\"M4 6h16v12H4z\"></path><path d=\"m7 10 2 2-2 2\"></path><path d=\"M12 15h4\"></path>
+    </symbol>
+    <symbol id=\"i-control\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-linecap=\"round\" stroke-linejoin=\"round\">
+      <path d=\"M4 7h10\"></path><path d=\"M18 7h2\"></path><circle cx=\"16\" cy=\"7\" r=\"2\"></circle><path d=\"M4 17h2\"></path><path d=\"M10 17h10\"></path><circle cx=\"8\" cy=\"17\" r=\"2\"></circle>
+    </symbol>
+  </svg>
+  <div class=\"app\">
+    <aside class=\"rail\">
+      <div class=\"brand\">
+        <div class=\"brand-mark\"><svg><use href=\"#i-battery\"></use></svg></div>
+        <div>
+          <div class=\"brand-title\">电池接管</div>
+          <div class=\"brand-version\">Local Control Console</div>
         </div>
       </div>
-
-      <!-- Chart -->
-      <div class=\"card chart-area\" style=\"position: relative;\">
-        <div class=\"card-title\">24 小时电量趋势</div>
-        <div id=\"chart-skeleton\">
-          <svg id=\"curve\" viewBox=\"0 0 1000 260\" preserveAspectRatio=\"none\"></svg>
-          <div class=\"chart-tooltip\" id=\"chart-tooltip\"></div>
-        </div>
-        <div class=\"chart-legend\">
-          <div class=\"legend-item\">
-            <div class=\"legend-line\" style=\"background: var(--accent);\"></div>
-            <span>电量曲线</span>
-          </div>
-          <div class=\"legend-item\">
-            <div class=\"legend-line dashed\" style=\"color: var(--bad);\"></div>
-            <span>停充阈值</span>
-          </div>
-          <div class=\"legend-item\">
-            <div class=\"legend-line dashed\" style=\"color: var(--accent);\"></div>
-            <span>恢复阈值</span>
-          </div>
+      <nav class=\"nav\" aria-label=\"面板导航\">
+        <div class=\"nav-item active\"><svg><use href=\"#i-gauge\"></use></svg><span>实时状态</span></div>
+        <div class=\"nav-item\"><svg><use href=\"#i-control\"></use></svg><span>策略控制</span></div>
+        <div class=\"nav-item\"><svg><use href=\"#i-chart\"></use></svg><span>24h 趋势</span></div>
+        <div class=\"nav-item\"><svg><use href=\"#i-terminal\"></use></svg><span>本机日志</span></div>
+      </nav>
+      <div class=\"rail-foot\">
+        <div class=\"local-box\">
+          <div class=\"local-title\"><span class=\"dot\" id=\"rail-dot\"></span><span id=\"rail-agent\">Agent 检查中</span></div>
+          <div class=\"local-text\" id=\"rail-detail\">仅读取本机运行数据，不连接外部服务。</div>
         </div>
       </div>
+    </aside>
 
-      <!-- Side Panel -->
-      <div class=\"side-panel\">
-        <!-- Mode & Agent -->
-        <div class=\"card\">
-          <div class=\"card-title\">运行状态</div>
-          <div style=\"display: flex; flex-direction: column; gap: 14px;\">
-            <div>
-              <div style=\"font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;\">运行模式</div>
-              <div class=\"mode-badge\" id=\"kpi-mode\">--</div>
-            </div>
-            <div>
-              <div style=\"font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;\">Agent 状态</div>
-              <div class=\"stat-value\" id=\"kpi-agent\">--</div>
-            </div>
-            <div>
-              <div style=\"font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;\">24h 统计</div>
-              <div class=\"stat-value\" id=\"kpi-24h\">--</div>
+    <main class=\"content\">
+      <section class=\"status-strip\" aria-label=\"系统状态\">
+        <div class=\"status-cell\"><span class=\"dot\" id=\"status-dot\"></span><span class=\"status-label\">State</span><span class=\"status-value\" id=\"top-status-text\">加载中</span></div>
+        <div class=\"status-cell\"><span class=\"status-label\">Agent</span><span class=\"status-value\" id=\"top-agent\">-</span></div>
+        <div class=\"status-cell\"><span class=\"status-label\">Started</span><span class=\"status-value\" id=\"top-runtime\">-</span></div>
+        <div class=\"status-cell\"><span class=\"status-label\">Refresh</span><span class=\"status-value\" id=\"stamp\">加载中...</span></div>
+      </section>
+
+      <div class=\"grid\">
+      <section class=\"panel hero\" aria-label=\"当前电池状态\">
+        <div class=\"hero-grid\">
+          <div class=\"battery-shell\" aria-hidden=\"true\">
+            <div class=\"battery-fill\" id=\"battery-fill\"></div>
+            <div class=\"battery-gauge-text\" id=\"battery-gauge-text\">-</div>
+          </div>
+          <div>
+            <div class=\"k\">当前电量</div>
+            <div class=\"hero-percent\" id=\"kpi-percent\">-</div>
+            <div class=\"hero-state\" id=\"explain-title\">读取中</div>
+            <p class=\"hero-copy\" id=\"explain-body\">正在读取本机电池和策略状态。</p>
+          </div>
+          <div class=\"divider\"></div>
+          <div>
+            <div class=\"policy-title\">项目接管区间</div>
+            <div class=\"policy-band\" id=\"kpi-band\">-</div>
+            <div class=\"policy-list\">
+              <span>控制模式</span><span><span class=\"mode\" id=\"kpi-mode\">-</span></span>
+              <span>当前动作</span><span id=\"st-action\">-</span>
+              <span>执行后端</span><span id=\"st-backend\">-</span>
+              <span>接管建议</span><span id=\"explain-next\">-</span>
             </div>
           </div>
         </div>
-
-        <!-- Current Status -->
-        <div class=\"card\">
-          <div class=\"card-title\">设备状态</div>
-          <div class=\"stat-row\"><span class=\"stat-label\">插电状态</span><span class=\"stat-value\" id=\"st-ac\">--</span></div>
-          <div class=\"stat-row\"><span class=\"stat-label\">循环次数</span><span class=\"stat-value\" id=\"st-cycle\">--</span></div>
-          <div class=\"stat-row\"><span class=\"stat-label\">健康容量</span><span class=\"stat-value\" id=\"st-health\">--</span></div>
-          <div class=\"stat-row\"><span class=\"stat-label\">最近动作</span><span class=\"stat-value\" id=\"st-action\">--</span></div>
-          <div class=\"stat-row\"><span class=\"stat-label\">执行后端</span><span class=\"stat-value\" id=\"st-backend\">--</span></div>
+        <div class=\"hero-checks\">
+          <div class=\"hero-check\"><span>电源连接</span><strong id=\"hero-ac\">-</strong></div>
+          <div class=\"hero-check\"><span>电池健康</span><strong id=\"hero-health\">-</strong></div>
+          <div class=\"hero-check\"><span>刷新节奏</span><strong>10 秒自动刷新</strong></div>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <!-- Bottom Grid -->
-    <div class=\"grid-bottom\">
-      <!-- Controls -->
-      <div class=\"card\">
-        <div class=\"card-title\">阈值控制</div>
-        <div class=\"toggle-switch\">
-          <div class=\"toggle-info\">
-            <strong id=\"mgmt-title\">项目电池管理</strong>
-            <span id=\"mgmt-hint\">开启后按下方阈值控充；关闭后恢复系统默认充电规则。</span>
+      <section class=\"panel control-panel\" aria-label=\"策略控制\">
+        <div class=\"section-head\"><div class=\"k\">策略控制</div><span class=\"pill warn\">真实写入</span></div>
+        <div class=\"ctrl\">
+          <div class=\"toggle\">
+            <div class=\"toggle-copy\">
+              <strong id=\"mgmt-title\">项目电池管理</strong>
+              <span id=\"mgmt-hint\">开启后按下方阈值控充；关闭后恢复系统默认充电规则。</span>
+            </div>
+            <input id=\"enabled-input\" class=\"switch\" type=\"checkbox\" aria-label=\"项目电池管理开关\" />
           </div>
-          <input id=\"enabled-input\" class=\"switch-input\" type=\"checkbox\" />
-        </div>
-        <div class=\"slider-group\">
-          <div class=\"slider-label\">
-            <span>停充阈值</span>
-            <span class=\"slider-value\" id=\"stop-value\">--%</span>
+          <div class=\"ctrl-row\">
+            <label for=\"stop-input\">停充阈值</label>
+            <div class=\"stepper\">
+              <button type=\"button\" data-step-target=\"stop-input\" data-step=\"-1\" aria-label=\"降低停充阈值\">-</button>
+              <input id=\"stop-input\" type=\"number\" min=\"50\" max=\"100\" />
+              <button type=\"button\" data-step-target=\"stop-input\" data-step=\"1\" aria-label=\"提高停充阈值\">+</button>
+            </div>
           </div>
-          <input id=\"stop-input\" class=\"range-input\" type=\"range\" min=\"50\" max=\"100\" />
-        </div>
-        <div class=\"slider-group\">
-          <div class=\"slider-label\">
-            <span>恢复阈值</span>
-            <span class=\"slider-value\" id=\"resume-value\">--%</span>
+          <div class=\"ctrl-row\">
+            <label for=\"resume-input\">恢复阈值</label>
+            <div class=\"stepper\">
+              <button type=\"button\" data-step-target=\"resume-input\" data-step=\"-1\" aria-label=\"降低恢复阈值\">-</button>
+              <input id=\"resume-input\" type=\"number\" min=\"40\" max=\"99\" />
+              <button type=\"button\" data-step-target=\"resume-input\" data-step=\"1\" aria-label=\"提高恢复阈值\">+</button>
+            </div>
           </div>
-          <input id=\"resume-input\" class=\"range-input\" type=\"range\" min=\"40\" max=\"99\" />
+          <button class=\"btn\" id=\"save-btn\">保存并立即应用</button>
+          <button class=\"btn secondary\" id=\"enforce-btn\">立即执行当前策略</button>
+          <button class=\"btn ghost\" id=\"system-btn\">交还系统充电</button>
+          <div class=\"notice\"><strong>注意</strong><span>这里会写入本机配置并调用 batt。出门前需要充满电时，可以先交还系统充电。</span></div>
+          <div id=\"save-msg\" role=\"status\" aria-live=\"polite\"></div>
         </div>
-        <div class=\"btn-group\">
-          <button class=\"btn\" id=\"save-btn\">
-            <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">
-              <path d=\"M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z\"/><polyline points=\"17 21 17 13 7 13 7 21\"/><polyline points=\"7 3 7 8 15 8\"/>
-            </svg>
-            保存并应用
-          </button>
-          <button class=\"btn secondary\" id=\"enforce-btn\">
-            <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">
-              <polygon points=\"5 3 19 12 5 21 5 3\"/>
-            </svg>
-            立即执行
-          </button>
+      </section>
+
+      <section class=\"panel chart\" aria-label=\"最近 24 小时电量曲线\">
+        <div class=\"section-head\">
+          <div class=\"k\">最近 24 小时电量曲线</div>
+          <span class=\"pill ok\" id=\"band-chip\">目标区间 -</span>
         </div>
-        <div class=\"hint\">居家时保持开关开启并设置 92/88；出门前关闭开关，系统会恢复正常充到 100%。</div>
-        <div class=\"msg\" id=\"save-msg\"></div>
+        <svg id=\"curve\" viewBox=\"0 0 1000 220\" preserveAspectRatio=\"none\"></svg>
+        <div class=\"meta\" id=\"curve-meta\">-</div>
+      </section>
+
+      <section class=\"panel side\" aria-label=\"今日判断\">
+        <div class=\"section-head\">
+          <div class=\"k\">今日判断</div>
+          <span class=\"pill\" id=\"explain-level\">-</span>
+        </div>
+        <div class=\"explain\">
+          <div class=\"explain-title\" id=\"side-explain-title\">-</div>
+          <div class=\"explain-body\" id=\"side-explain-body\">-</div>
+          <div class=\"explain-next\" id=\"side-explain-next\">-</div>
+        </div>
+        <hr style=\"border:0;border-top:1px solid var(--border);margin:12px 0\">
+        <div class=\"row\"><span>插电</span><span id=\"st-ac\">-</span></div>
+        <div class=\"row\"><span>充电中</span><span id=\"st-charging\">-</span></div>
+        <div class=\"row\"><span>循环次数</span><span id=\"st-cycle\">-</span></div>
+        <div class=\"row\"><span>健康容量</span><span id=\"st-health\">-</span></div>
+      </section>
+
+      <section class=\"panel half\" aria-label=\"24 小时接管摘要\">
+        <div class=\"section-head\"><div class=\"k\">24h 接管摘要</div><span class=\"pill ok\" id=\"summary-health\">-</span></div>
+        <div class=\"stat-grid\">
+          <div class=\"stat\"><div class=\"label\">样本</div><div class=\"num\" id=\"sum-samples\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">动作</div><div class=\"num\" id=\"sum-actions\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">失败</div><div class=\"num\" id=\"sum-failures\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">区间内</div><div class=\"num\" id=\"sum-band\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">成功率</div><div class=\"num\" id=\"sum-success\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">最低</div><div class=\"num\" id=\"sum-min\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">最高</div><div class=\"num\" id=\"sum-max\">-</div></div>
+          <div class=\"stat\"><div class=\"label\">高于上限</div><div class=\"num\" id=\"sum-above\">-</div></div>
+        </div>
+      </section>
+
+      <section class=\"panel half\" aria-label=\"运行路径\">
+        <div class=\"section-head\"><div class=\"k\">运行路径</div><span class=\"pill warn\">本机</span></div>
+        <div class=\"mono\" id=\"paths\">-</div>
+      </section>
+
+      <section class=\"panel wide\" aria-label=\"最近动作\">
+        <div class=\"k\">最近动作（24h）</div>
+        <div class=\"table-wrap\">
+          <table>
+            <thead>
+              <tr><th>时间</th><th>动作</th><th>后端</th><th>目标</th><th>结果</th><th>错误</th></tr>
+            </thead>
+            <tbody id=\"action-body\"><tr><td class=\"empty-row\" colspan=\"6\">正在读取动作记录...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
       </div>
-
-      <!-- Timeline -->
-      <div class=\"card\">
-        <div class=\"card-title\">动作历史（最近 20 条）</div>
-        <div class=\"timeline\" id=\"timeline-container\">
-          <div class=\"timeline-empty\">加载中...</div>
-        </div>
-      </div>
+    </main>
     </div>
-
-    <!-- Footer -->
-    <div class=\"footer\">
-      <span class=\"footer-paths\" id=\"paths\">--</span>
-      <span>电池接管 v1.0</span>
-    </div>
-  </div>
-
-  <!-- Toast Container -->
-  <div class=\"toast-container\" id=\"toast-container\"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let countdownValue = 10;
-let countdownInterval;
-let currentTheme = localStorage.getItem('theme') || 'dark';
-
-document.documentElement.setAttribute('data-theme', currentTheme);
 
 function fmtTs(ts) {
   if (!ts) return '-';
   const d = new Date(ts);
-  if (isNaN(d.getTime())) return ts;
-  const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-  const timeStr = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  if (isToday) return `今天 ${timeStr}`;
-  return `${d.getMonth()+1}/${d.getDate()} ${timeStr}`;
+  return isNaN(d.getTime()) ? ts : d.toLocaleString();
 }
 
-function fmtTsFull(ts) {
+function fmtShortTs(ts) {
   if (!ts) return '-';
   const d = new Date(ts);
-  return isNaN(d.getTime()) ? ts : d.toLocaleString('zh-CN');
+  return isNaN(d.getTime()) ? ts : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function getBatteryColor(percent) {
-  if (percent <= 20) return 'var(--bad)';
-  if (percent <= 50) return 'var(--warn)';
-  return 'var(--accent)';
+function fmtStarted(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '-';
+  const hours = Math.max(0, Math.round((Date.now() - d.getTime()) / 36e5));
+  if (hours < 1) return '刚启动';
+  if (hours < 48) return `${hours} 小时`;
+  return `${Math.round(hours / 24)} 天`;
 }
 
-function animateNumber(el, target, suffix = '') {
-  const start = parseFloat(el.textContent) || 0;
-  if (isNaN(start) && el.textContent !== '--') return;
-  const duration = 600;
-  const startTime = performance.now();
-  function update(currentTime) {
-    const elapsed = currentTime - startTime;
-    const progress = Math.min(elapsed / duration, 1);
-    const easeOut = 1 - Math.pow(1 - progress, 3);
-    const current = start + (target - start) * easeOut;
-    if (Number.isInteger(target)) {
-      el.textContent = Math.round(current) + suffix;
-    } else {
-      el.textContent = current.toFixed(1) + suffix;
-    }
-    if (progress < 1) requestAnimationFrame(update);
-  }
-  requestAnimationFrame(update);
+function setStatusTone(level) {
+  const dot = $('status-dot');
+  const railDot = $('rail-dot');
+  const cls = level === 'bad' ? 'dot bad' : (level === 'warn' ? 'dot warn' : 'dot');
+  dot.className = cls;
+  railDot.className = cls;
 }
 
-function showToast(message, type = 'success') {
-  const container = $('toast-container');
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  const icon = type === 'success'
-    ? '<svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--accent)\" stroke-width=\"2\"><polyline points=\"20 6 9 17 4 12\"/></svg>'
-    : '<svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--bad)\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><line x1=\"15\" y1=\"9\" x2=\"9\" y2=\"15\"/><line x1=\"9\" y1=\"9\" x2=\"15\" y2=\"15\"/></svg>';
-  toast.innerHTML = `${icon}<span>${message}</span>`;
-  container.appendChild(toast);
-  setTimeout(() => toast.remove(), 3000);
-}
-
-function updateBatteryRing(percent) {
-  const ring = $('battery-ring');
-  const text = $('kpi-percent');
-  if (percent == null) {
-    text.textContent = '--';
-    ring.style.strokeDashoffset = 490;
-    return;
-  }
-  const circumference = 2 * Math.PI * 78;
-  const offset = circumference - (percent / 100) * circumference;
-  ring.style.strokeDasharray = circumference;
-  ring.style.strokeDashoffset = offset;
-  ring.style.stroke = getBatteryColor(percent);
-  text.style.color = getBatteryColor(percent);
-  animateNumber(text, percent, '%');
-}
-
-function drawCurve(samples, stopPercent, resumePercent) {
+function drawCurve(samples, policy) {
   const svg = $('curve');
   svg.innerHTML = '';
-  if (!samples || !samples.length) {
-    svg.innerHTML = '<text x=\"500\" y=\"130\" text-anchor=\"middle\" fill=\"var(--text-secondary)\" font-size=\"14\">暂无数据</text>';
+  if (!samples.length) {
+    $('curve-meta').textContent = '暂无样本。等待 Agent 写入第一条记录后会显示曲线。';
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', '500');
+    text.setAttribute('y', '112');
+    text.setAttribute('fill', '#62706a');
+    text.setAttribute('font-size', '14');
+    text.setAttribute('text-anchor', 'middle');
+    text.textContent = '暂无 24h 样本';
+    svg.appendChild(text);
     return;
   }
 
   const vals = samples.map(s => Number(s.percent));
-  const minV = Math.max(0, Math.min(...vals) - 5);
-  const maxV = Math.min(100, Math.max(...vals) + 5);
+  const minV = Math.min(...vals, 0);
+  const maxV = Math.max(...vals, 100);
   const range = Math.max(maxV - minV, 1);
 
-  const width = 1000;
-  const height = 260;
-  const padding = { top: 20, bottom: 40, left: 10, right: 10 };
-  const chartW = width - padding.left - padding.right;
-  const chartH = height - padding.top - padding.bottom;
-
-  // Grid lines
-  for (let i = 0; i <= 4; i++) {
-    const y = padding.top + (chartH / 4) * i;
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', padding.left);
-    line.setAttribute('y1', y);
-    line.setAttribute('x2', width - padding.right);
-    line.setAttribute('y2', y);
-    line.setAttribute('stroke', 'var(--border)');
-    line.setAttribute('stroke-width', '1');
-    line.setAttribute('stroke-dasharray', '4,4');
-    svg.appendChild(line);
-  }
-
-  // Threshold lines
-  function drawThreshold(value, color) {
-    const y = padding.top + chartH - ((value - minV) / range) * chartH;
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', padding.left);
-    line.setAttribute('y1', y);
-    line.setAttribute('x2', width - padding.right);
-    line.setAttribute('y2', y);
-    line.setAttribute('stroke', color);
-    line.setAttribute('stroke-width', '2');
-    line.setAttribute('stroke-dasharray', '8,4');
-    line.setAttribute('opacity', '0.6');
-    svg.appendChild(line);
-  }
-  if (stopPercent != null) drawThreshold(stopPercent, 'var(--bad)');
-  if (resumePercent != null) drawThreshold(resumePercent, 'var(--accent)');
-
-  // Area gradient
-  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-  const gradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
-  gradient.setAttribute('id', 'areaGradient');
-  gradient.setAttribute('x1', '0');
-  gradient.setAttribute('y1', '0');
-  gradient.setAttribute('x2', '0');
-  gradient.setAttribute('y2', '1');
-  const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-  stop1.setAttribute('offset', '0%');
-  stop1.setAttribute('stop-color', 'var(--accent)');
-  stop1.setAttribute('stop-opacity', '0.2');
-  const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-  stop2.setAttribute('offset', '100%');
-  stop2.setAttribute('stop-color', 'var(--accent)');
-  stop2.setAttribute('stop-opacity', '0');
-  gradient.appendChild(stop1);
-  gradient.appendChild(stop2);
-  defs.appendChild(gradient);
-  svg.appendChild(defs);
-
-  // Points
   const points = samples.map((s, i) => {
-    const x = padding.left + (i / Math.max(samples.length - 1, 1)) * chartW;
-    const y = padding.top + chartH - ((Number(s.percent) - minV) / range) * chartH;
-    return { x, y, percent: s.percent, ts: s.ts, on_ac: s.on_ac, charging: s.charging };
+    const x = (i / Math.max(samples.length - 1, 1)) * 1000;
+    const y = 210 - ((Number(s.percent) - minV) / range) * 180;
+    return `${x},${y}`;
   });
 
-  // Area
-  const areaPoints = [
-    `${points[0].x},${padding.top + chartH}`,
-    ...points.map(p => `${p.x},${p.y}`),
-    `${points[points.length - 1].x},${padding.top + chartH}`
-  ].join(' ');
+  const areaPoints = [`0,220`, ...points, `1000,220`].join(' ');
   const area = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
   area.setAttribute('points', areaPoints);
-  area.setAttribute('fill', 'url(#areaGradient)');
+  area.setAttribute('fill', 'rgba(15,98,64,0.12)');
   svg.appendChild(area);
 
-  // Line
-  const linePoints = points.map(p => `${p.x},${p.y}`).join(' ');
+  const addThreshold = (value, color, label) => {
+    if (value == null) return;
+    const y = 210 - ((Number(value) - minV) / range) * 180;
+    const threshold = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    threshold.setAttribute('x1', '0');
+    threshold.setAttribute('x2', '1000');
+    threshold.setAttribute('y1', String(y));
+    threshold.setAttribute('y2', String(y));
+    threshold.setAttribute('stroke', color);
+    threshold.setAttribute('stroke-width', '1.5');
+    threshold.setAttribute('stroke-dasharray', '8 7');
+    svg.appendChild(threshold);
+
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', '12');
+    text.setAttribute('y', String(Math.max(14, y - 6)));
+    text.setAttribute('fill', color);
+    text.setAttribute('font-size', '13');
+    text.setAttribute('font-family', 'IBM Plex Mono, Menlo, monospace');
+    text.textContent = `${label} ${value}%`;
+    svg.appendChild(text);
+  };
+
+  addThreshold(policy?.stop_percent, '#b07400', 'stop');
+  addThreshold(policy?.resume_percent, '#237a52', 'resume');
+
   const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-  line.setAttribute('points', linePoints);
+  line.setAttribute('points', points.join(' '));
   line.setAttribute('fill', 'none');
-  line.setAttribute('stroke', 'var(--accent)');
-  line.setAttribute('stroke-width', '2.5');
-  line.setAttribute('stroke-linecap', 'round');
-  line.setAttribute('stroke-linejoin', 'round');
+  line.setAttribute('stroke', 'var(--line)');
+  line.setAttribute('stroke-width', '3');
   svg.appendChild(line);
 
-  // Data points
-  points.forEach((p, i) => {
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', p.x);
-    circle.setAttribute('cy', p.y);
-    circle.setAttribute('r', '3');
-    circle.setAttribute('fill', 'var(--bg-primary)');
-    circle.setAttribute('stroke', 'var(--accent)');
-    circle.setAttribute('stroke-width', '2');
-    circle.setAttribute('class', 'data-point');
-    circle.style.cursor = 'pointer';
-    circle.style.transition = 'r 0.2s';
-
-    circle.addEventListener('mouseenter', () => {
-      circle.setAttribute('r', '6');
-      showTooltip(p, circle);
-    });
-    circle.addEventListener('mouseleave', () => {
-      circle.setAttribute('r', '3');
-      hideTooltip();
-    });
-    svg.appendChild(circle);
-  });
-
-  // X-axis labels
-  const labelCount = Math.min(6, samples.length);
-  for (let i = 0; i < labelCount; i++) {
-    const idx = Math.floor((i / (labelCount - 1)) * (samples.length - 1));
-    const x = padding.left + (idx / Math.max(samples.length - 1, 1)) * chartW;
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', x);
-    text.setAttribute('y', height - 8);
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('fill', 'var(--text-secondary)');
-    text.setAttribute('font-size', '11');
-    const d = new Date(samples[idx].ts);
-    text.textContent = isNaN(d.getTime()) ? '' : `${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
-    svg.appendChild(text);
-  }
+  const last = samples[samples.length - 1];
+  $('curve-meta').textContent = `样本 ${samples.length} 条，当前 ${last.percent}%（${fmtTs(last.ts)}）`;
 }
 
-function showTooltip(data, target) {
-  const tooltip = $('chart-tooltip');
-  const svg = $('curve');
-  const rect = svg.getBoundingClientRect();
-  tooltip.innerHTML = `
-    <div style=\"font-weight: 600; margin-bottom: 4px;\">${fmtTsFull(data.ts)}</div>
-    <div style=\"display: flex; align-items: center; gap: 8px;\">
-      <span style=\"color: var(--accent); font-weight: 700; font-size: 16px;\">${data.percent}%</span>
-      <span style=\"color: var(--text-secondary);\">${data.charging ? '充电中' : (data.on_ac ? '插电' : '电池')}</span>
-    </div>
-  `;
-  tooltip.classList.add('visible');
-
-  const tooltipRect = tooltip.getBoundingClientRect();
-  let left = rect.left + (data.x / 1000) * rect.width - tooltipRect.width / 2;
-  let top = rect.top + (data.y / 260) * rect.height - tooltipRect.height - 12;
-  left = Math.max(8, Math.min(left, window.innerWidth - tooltipRect.width - 8));
-  top = Math.max(8, top);
-  tooltip.style.left = left + 'px';
-  tooltip.style.top = top + 'px';
+function applyExplanation(explanation) {
+  const level = explanation?.level || 'warn';
+  $('explain-title').textContent = explanation?.title || '-';
+  $('explain-body').textContent = explanation?.body || '-';
+  $('explain-next').textContent = explanation?.next || '-';
+  $('side-explain-title').textContent = explanation?.title || '-';
+  $('side-explain-body').textContent = explanation?.body || '-';
+  $('side-explain-next').textContent = explanation?.next || '-';
+  const el = $('explain-level');
+  const text = level === 'ok' ? '正常' : (level === 'bad' ? '异常' : '注意');
+  el.textContent = text;
+  el.className = `pill ${level}`;
+  setStatusTone(level);
 }
 
-function hideTooltip() {
-  $('chart-tooltip').classList.remove('visible');
-}
-
-function renderTimeline(actions) {
-  const container = $('timeline-container');
-  container.innerHTML = '';
+function renderActions(actions) {
+  const body = $('action-body');
+  body.innerHTML = '';
   const rows = actions.slice(-20).reverse();
   if (!rows.length) {
-    container.innerHTML = '<div class=\"timeline-empty\">暂无动作记录</div>';
+    body.innerHTML = '<tr><td class="empty-row" colspan="6">24 小时内暂无动作记录</td></tr>';
     return;
   }
   for (const a of rows) {
+    const tr = document.createElement('tr');
     const ok = Number(a.success) === 1;
-    const item = document.createElement('div');
-    item.className = 'timeline-item';
-    item.innerHTML = `
-      <div class=\"timeline-dot ${ok ? 'success' : 'error'}\"></div>
-      <div class=\"timeline-time\">${fmtTsFull(a.ts)}</div>
-      <div class=\"timeline-content\">
-        <span class=\"timeline-badge ${ok ? 'success' : 'error'}\">${ok ? '成功' : '失败'}</span>
-        <span>${a.action_type || '-'}</span>
-        ${a.target_percent != null ? `<span style=\"color: var(--text-secondary);\">目标 ${a.target_percent}%</span>` : ''}
-        ${a.backend ? `<span style=\"color: var(--text-secondary); font-size: 11px;\">${a.backend}</span>` : ''}
-      </div>
-      ${a.error_msg ? `<div style=\"font-size: 11px; color: var(--bad); margin-top: 4px;\">${a.error_msg}</div>` : ''}
+    tr.innerHTML = `
+      <td>${fmtTs(a.ts)}</td>
+      <td>${a.action_type || '-'}</td>
+      <td>${a.backend || '-'}</td>
+      <td>${a.target_percent ?? '-'}</td>
+      <td class="${ok ? 'ok' : 'bad'}">${ok ? '成功' : '失败'}</td>
+      <td>${a.error_msg || ''}</td>
     `;
-    container.appendChild(item);
+    body.appendChild(tr);
+  }
+}
+
+async function loadPolicy() {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) {
+      throw new Error(`/api/config returned ${res.status}`);
+    }
+    const cfg = await res.json();
+    $('stop-input').value = cfg.stop_percent;
+    $('resume-input').value = cfg.resume_percent;
+    $('enabled-input').checked = Boolean(cfg.enabled);
+    syncControlForm(Boolean(cfg.enabled));
+  } catch (err) {
+    $('save-msg').textContent = `配置加载失败: ${err}`;
+    $('save-msg').className = 'bad';
   }
 }
 
@@ -1259,40 +1136,17 @@ function syncControlForm(enabled) {
     : '关闭后会清除项目限充，让系统按默认规则继续充电。';
   $('stop-input').disabled = !enabled;
   $('resume-input').disabled = !enabled;
-  $('save-btn').disabled = !enabled;
-  if (!enabled) {
-    $('save-btn').style.opacity = '0.5';
-    $('save-btn').style.pointerEvents = 'none';
-  } else {
-    $('save-btn').style.opacity = '1';
-    $('save-btn').style.pointerEvents = 'auto';
-  }
-}
-
-async function loadPolicy() {
-  try {
-    const res = await fetch('/api/config');
-    if (!res.ok) throw new Error(`/api/config returned ${res.status}`);
-    const cfg = await res.json();
-    $('stop-input').value = cfg.stop_percent;
-    $('resume-input').value = cfg.resume_percent;
-    $('stop-value').textContent = cfg.stop_percent + '%';
-    $('resume-value').textContent = cfg.resume_percent + '%';
-    $('enabled-input').checked = Boolean(cfg.enabled);
-    syncControlForm(Boolean(cfg.enabled));
-    return cfg;
-  } catch (err) {
-    showToast('配置加载失败: ' + err.message, 'error');
-    return null;
-  }
+  document.querySelectorAll('.stepper button').forEach((button) => {
+    button.disabled = !enabled;
+  });
 }
 
 async function savePolicy() {
-  const btn = $('save-btn');
-  btn.classList.add('loading');
   const stop = Number($('stop-input').value);
   const resume = Number($('resume-input').value);
   const enabled = $('enabled-input').checked;
+  const msg = $('save-msg');
+  msg.textContent = '保存中...';
   try {
     const res = await fetch('/api/config', {
       method: 'POST',
@@ -1301,134 +1155,158 @@ async function savePolicy() {
     });
     const payload = await res.json();
     if (!res.ok) {
-      showToast('保存失败: ' + (payload.error || 'unknown error'), 'error');
+      msg.textContent = `保存失败: ${payload.error || 'unknown error'}`;
+      msg.className = 'bad';
       return;
     }
     syncControlForm(Boolean(payload.policy.enabled));
-    showToast('设置已保存并应用');
+    const apply = payload.apply || {};
+    const appliedText = apply.action ? `；已执行 ${apply.action}` : '';
+    msg.textContent = `已保存: ${payload.policy.enabled ? '启用项目管理' : '恢复系统管理'}，stop=${payload.policy.stop_percent}，resume=${payload.policy.resume_percent}${appliedText}`;
+    msg.className = payload.apply && payload.apply.success === false ? 'bad' : 'ok';
     await refresh();
   } catch (err) {
-    showToast('保存失败: ' + err.message, 'error');
-  } finally {
-    btn.classList.remove('loading');
+    msg.textContent = `保存失败: ${err}`;
+    msg.className = 'bad';
   }
 }
 
 async function enforceNow() {
-  const btn = $('enforce-btn');
-  btn.classList.add('loading');
+  const msg = $('save-msg');
+  msg.textContent = '执行中...';
   try {
     const res = await fetch('/api/enforce-now', { method: 'POST' });
     const payload = await res.json();
     if (!res.ok) {
-      showToast('执行失败: ' + (payload.error || 'unknown error'), 'error');
+      msg.textContent = `执行失败: ${payload.error || 'unknown error'}`;
+      msg.className = 'bad';
       return;
     }
-    showToast(`执行结果: ${payload.action} (${payload.message})`, payload.success ? 'success' : 'error');
+    msg.textContent = `执行结果: ${payload.action} (${payload.message})`;
+    msg.className = payload.success ? 'ok' : 'bad';
     await refresh();
   } catch (err) {
-    showToast('执行失败: ' + err.message, 'error');
-  } finally {
-    btn.classList.remove('loading');
+    msg.textContent = `执行失败: ${err}`;
+    msg.className = 'bad';
   }
+}
+
+async function handBackToSystem() {
+  $('enabled-input').checked = false;
+  syncControlForm(false);
+  await savePolicy();
+}
+
+function updateBatteryGauge(percent) {
+  const value = Number(percent);
+  const valid = Number.isFinite(value);
+  const pct = valid ? Math.max(0, Math.min(100, value)) : 0;
+  $('battery-fill').style.height = `${pct}%`;
+  $('battery-gauge-text').textContent = valid ? `${pct}%` : '-';
+  $('battery-fill').style.background = pct >= 90 ? 'var(--warn)' : 'var(--accent)';
 }
 
 async function refresh() {
-  const refreshBtn = $('refresh-btn');
-  refreshBtn.classList.add('spinning');
   try {
-    const [ovRes, histRes] = await Promise.all([
-      fetch('/api/overview'),
+    const [snapRes, histRes] = await Promise.all([
+      fetch('/api/snapshot'),
       fetch('/api/history?hours=24'),
     ]);
-    if (!ovRes.ok) throw new Error(`/api/overview returned ${ovRes.status}`);
-    if (!histRes.ok) throw new Error(`/api/history returned ${histRes.status}`);
-    const ov = await ovRes.json();
+    if (!snapRes.ok) {
+      throw new Error(`/api/snapshot returned ${snapRes.status}`);
+    }
+    if (!histRes.ok) {
+      throw new Error(`/api/history returned ${histRes.status}`);
+    }
+    const snap = await snapRes.json();
     const hist = await histRes.json();
+    const ov = snap.overview || {};
+    const policy = snap.policy || {};
+    const windowSummary = snap.window || {};
 
-    $('stamp').textContent = `最后刷新：${fmtTsFull(ov.generated_at)}`;
+    $('stamp').textContent = fmtShortTs(ov.generated_at);
 
     const s = ov.latest_sample || {};
     const a = ov.latest_action || {};
-    const mode = (ov.runtime_state || {}).mode || '-';
+    const runtime = ov.runtime_state || {};
+    const mode = runtime.mode || '-';
 
-    updateBatteryRing(s.percent);
-    animateNumber($('kpi-24h'), ov.sample_count_24h, ' / ' + ov.action_count_24h);
+    $('kpi-percent').textContent = s.percent != null ? `${s.percent}%` : '-';
+    updateBatteryGauge(s.percent);
+    $('kpi-band').textContent = policy.stop_percent != null ? `${policy.resume_percent}-${policy.stop_percent}%` : '-';
+    $('band-chip').textContent = policy.stop_percent != null ? `目标区间 ${policy.resume_percent}-${policy.stop_percent}%` : '目标区间 -';
+    if (document.activeElement !== $('stop-input')) $('stop-input').value = policy.stop_percent ?? '';
+    if (document.activeElement !== $('resume-input')) $('resume-input').value = policy.resume_percent ?? '';
+    $('enabled-input').checked = Boolean(policy.enabled);
 
     const modeEl = $('kpi-mode');
     modeEl.textContent = mode;
-    modeEl.className = `mode-badge ${mode}`;
-    modeEl.innerHTML = `<span class=\"pulse-dot\"></span>${mode === 'ACTIVE_CONTROL' ? '主动控制' : mode === 'OBSERVE_ONLY' ? '仅观察' : '降级只读'}`;
+    modeEl.className = `mode ${mode}`;
 
     const agent = ov.agent || {};
-    const agentEl = $('kpi-agent');
-    agentEl.textContent = agent.running ? `运行中 (#${agent.pid})` : '未运行';
-    agentEl.className = `stat-value ${agent.running ? 'ok' : 'bad'}`;
+    const agentText = agent.running ? `运行中 #${agent.pid}` : '未运行';
+    $('top-agent').textContent = agentText;
+    $('rail-agent').textContent = agentText;
+    $('rail-detail').textContent = agent.running ? 'LaunchAgent 正在后台巡检本机电池。' : 'Agent 未运行，只能查看历史数据。';
+    $('top-runtime').textContent = fmtStarted(runtime.observe_started_at);
+    $('top-status-text').textContent = mode === 'ACTIVE_CONTROL' ? '接管中' : (mode === 'DEGRADED_READONLY' ? '只读降级' : '观察模式');
 
-    $('st-ac').textContent = Number(s.on_ac) === 1 ? '已插电' : (s.on_ac == null ? '-' : '未插电');
+    $('st-ac').textContent = Number(s.on_ac) === 1 ? '是' : (s.on_ac == null ? '-' : '否');
+    $('st-charging').textContent = Number(s.charging) === 1 ? '是' : (s.charging == null ? '-' : '否');
     $('st-cycle').textContent = s.cycle_count ?? '-';
     $('st-health').textContent = s.max_capacity_pct != null ? `${s.max_capacity_pct}%` : '-';
+    $('hero-ac').textContent = Number(s.on_ac) === 1 ? '已接入电源' : (s.on_ac == null ? '-' : '未接入电源');
+    $('hero-health').textContent = s.max_capacity_pct != null ? `最大容量 ${s.max_capacity_pct}%` : '-';
     $('st-action').textContent = a.action_type || '-';
     $('st-backend').textContent = a.backend || '-';
+    syncControlForm(Boolean(policy.enabled));
 
-    const chargingStatus = $('charging-status');
-    const chargingDot = $('charging-dot');
-    if (Number(s.charging) === 1) {
-      chargingStatus.textContent = '充电中';
-      chargingDot.style.background = 'var(--accent)';
-      chargingDot.style.animation = 'pulse 2s ease-in-out infinite';
-    } else {
-      chargingStatus.textContent = s.on_ac ? '已充满 / 未充电' : '使用电池';
-      chargingDot.style.background = 'var(--text-secondary)';
-      chargingDot.style.animation = 'none';
-    }
+    applyExplanation(snap.explanation || {});
 
-    const cfg = await (await fetch('/api/config')).json();
-    syncControlForm(Boolean(cfg.enabled));
+    $('sum-samples').textContent = windowSummary.sample_count ?? '-';
+    $('sum-actions').textContent = windowSummary.action_count ?? '-';
+    $('sum-failures').textContent = windowSummary.failure_count ?? '-';
+    $('sum-band').textContent = windowSummary.target_band_percent != null ? `${windowSummary.target_band_percent}%` : '-';
+    $('sum-success').textContent = windowSummary.success_rate != null ? `${windowSummary.success_rate}%` : '-';
+    $('sum-min').textContent = windowSummary.min_percent != null ? `${windowSummary.min_percent}%` : '-';
+    $('sum-max').textContent = windowSummary.max_percent != null ? `${windowSummary.max_percent}%` : '-';
+    $('sum-above').textContent = windowSummary.above_stop_count ?? '-';
+    const health = Number(windowSummary.failure_count || 0) === 0 ? '无失败' : `${windowSummary.failure_count} 次失败`;
+    $('summary-health').textContent = health;
+    $('summary-health').className = Number(windowSummary.failure_count || 0) === 0 ? 'pill ok' : 'pill bad';
 
     $('paths').textContent = `DB: ${ov.paths.db} | LOG: ${ov.paths.log} | REPORTS: ${ov.paths.reports_dir}`;
 
-    drawCurve(hist.samples || [], cfg.stop_percent, cfg.resume_percent);
-    renderTimeline(hist.actions || []);
+    drawCurve(hist.samples || [], policy);
+    renderActions(hist.actions || []);
   } catch (err) {
-    $('stamp').textContent = `数据刷新失败：${err.message}`;
-    showToast('数据刷新失败: ' + err.message, 'error');
-  } finally {
-    refreshBtn.classList.remove('spinning');
-    countdownValue = 10;
+    $('stamp').textContent = '失败';
+    $('top-status-text').textContent = '数据刷新失败';
+    $('curve-meta').textContent = `数据刷新失败：${err}`;
+    setStatusTone('bad');
   }
 }
 
-function startCountdown() {
-  if (countdownInterval) clearInterval(countdownInterval);
-  countdownInterval = setInterval(() => {
-    countdownValue--;
-    if (countdownValue <= 0) countdownValue = 10;
-    $('countdown').textContent = countdownValue;
-    $('countdown-display').textContent = countdownValue;
-  }, 1000);
-}
-
-function toggleTheme() {
-  currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', currentTheme);
-  localStorage.setItem('theme', currentTheme);
-}
-
-// Event listeners
 $('save-btn').addEventListener('click', savePolicy);
 $('enforce-btn').addEventListener('click', enforceNow);
-$('refresh-btn').addEventListener('click', refresh);
-$('theme-btn').addEventListener('click', toggleTheme);
-$('enabled-input').addEventListener('change', (e) => syncControlForm(Boolean(e.target.checked)));
-$('stop-input').addEventListener('input', (e) => $('stop-value').textContent = e.target.value + '%');
-$('resume-input').addEventListener('input', (e) => $('resume-value').textContent = e.target.value + '%');
+$('system-btn').addEventListener('click', handBackToSystem);
+$('enabled-input').addEventListener('change', (event) => {
+  syncControlForm(Boolean(event.target.checked));
+});
+document.querySelectorAll('.stepper button').forEach((button) => {
+  button.addEventListener('click', () => {
+    const input = $(button.dataset.stepTarget);
+    const step = Number(button.dataset.step || 0);
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const next = Math.max(min, Math.min(max, Number(input.value || 0) + step));
+    input.value = String(next);
+  });
+});
 
-// Init
 loadPolicy();
 refresh();
 setInterval(refresh, 10000);
-startCountdown();
 </script>
 </body>
 </html>
@@ -1448,6 +1326,11 @@ class _Handler(BaseHTTPRequestHandler):
 
             if path == "/api/overview":
                 payload = _build_overview(self.server.cfg)
+                self._send_json(payload)
+                return
+
+            if path == "/api/snapshot":
+                payload = _build_product_snapshot(self.server.cfg)
                 self._send_json(payload)
                 return
 
@@ -1578,10 +1461,12 @@ class DashboardServer(ThreadingHTTPServer):
 def run_dashboard(cfg: AppConfig, host: str, port: int, open_browser: bool) -> int:
     if not _is_loopback_host(host):
         print(
-            f"[dashboard] ERROR: refusing to bind control dashboard to non-loopback host {host!r}",
+            f"[dashboard] ERROR: refusing to bind non-loopback host {host!r}; "
+            "use 127.0.0.1, localhost, or ::1",
             file=sys.stderr,
         )
         return 2
+
     try:
         server = DashboardServer(host=host, port=port, cfg=cfg)
     except OSError as e:

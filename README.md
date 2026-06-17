@@ -8,6 +8,8 @@ Battery Takeover is a local macOS utility for monitoring battery state and apply
 
 The project provides a lightweight command-line tool, a local Dashboard, optional LaunchAgent startup, daily reports, and a macOS `.pkg` installer.
 
+Upgrade plan: [v0.3.0 product upgrade plan](./docs/升级规划-v0.3.0.md)
+
 ## Features
 
 - **Battery sampling**: records current charge, AC state, charging state, cycle count, and capacity signals.
