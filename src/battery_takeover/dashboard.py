@@ -45,6 +45,28 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _host_header_name(host_header: str) -> str:
+    raw = (host_header or "").strip()
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end != -1:
+            return raw[1:end]
+    return raw.split(":")[0].strip()
+
+
+def _is_local_dashboard_request(handler: BaseHTTPRequestHandler) -> bool:
+    host = _host_header_name(handler.headers.get("Host") or "")
+    if not _is_loopback_host(host):
+        return False
+    origin = (handler.headers.get("Origin") or "").strip()
+    if origin:
+        parsed = urlparse(origin)
+        origin_host = (parsed.hostname or "").strip()
+        if not origin_host or not _is_loopback_host(origin_host):
+            return False
+    return True
+
+
 def _agent_status(cfg: AppConfig) -> dict[str, object]:
     fallback_pid = _find_agent_pid_by_ps()
     pid_file = cfg.paths.db.parent / "agent.pid"
@@ -1362,6 +1384,9 @@ class _Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/config":
+            if not _is_local_dashboard_request(self):
+                self._send_json({"error": "refusing non-local Host/Origin"}, status=HTTPStatus.FORBIDDEN)
+                return
             data = self._read_json_body()
             if data is None:
                 self._send_json({"error": "invalid json body"}, status=HTTPStatus.BAD_REQUEST)
